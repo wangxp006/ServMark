@@ -1,9 +1,9 @@
-#include "servsysbench/servsysbench.h"
-#include "servsysbench/harness.h"
-#include "servsysbench/system.h"
-#include "servsysbench/output.h"
-#include "servsysbench/scoring.h"
-#include "servsysbench/benchmark.h"
+#include "servsysbench.h"
+#include "harness.h"
+#include "system.h"
+#include "output.h"
+#include "scoring.h"
+#include "benchmark.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

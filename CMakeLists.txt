@@ -28,7 +28,7 @@ add_library(ssbcore STATIC
     src/core/benchmark.c
 )
 target_include_directories(ssbcore PUBLIC
-    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/inc
     ${HWLOC_INCLUDE_DIRS} ${NUMA_INCLUDE_DIRS}
     ${LIBCRYPTO_INCLUDE_DIRS} ${ZSTD_INCLUDE_DIRS}
 )

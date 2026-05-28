@@ -1,5 +1,5 @@
-#include "servsysbench/servsysbench.h"
-#include "servsysbench/benchmark.h"
+#include "servsysbench.h"
+#include "benchmark.h"
 #include <stdlib.h>
 #include <string.h>
 

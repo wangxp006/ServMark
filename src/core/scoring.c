@@ -1,5 +1,5 @@
-#include "servsysbench/scoring.h"
-#include "servsysbench/stats.h"
+#include "scoring.h"
+#include "stats.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>

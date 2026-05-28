@@ -1,6 +1,6 @@
-#include "servsysbench/output.h"
-#include "servsysbench/system.h"
-#include "servsysbench/benchmark.h"
+#include "output.h"
+#include "system.h"
+#include "benchmark.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
