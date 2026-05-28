@@ -1,5 +1,5 @@
-#ifndef SERVSYSBENCH_H
-#define SERVSYSBENCH_H
+#ifndef SSB_SERVSYSBENCH_H
+#define SSB_SERVSYSBENCH_H
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -27,4 +27,4 @@ typedef struct harness_s harness_t;
 typedef struct system_info_s system_info_t;
 typedef struct run_result_s run_result_t;
 
-#endif
+#endif /* SSB_SERVSYSBENCH_H */

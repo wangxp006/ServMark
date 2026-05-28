@@ -97,4 +97,3 @@ target_link_libraries(servsysbench
 )
 
 install(TARGETS servsysbench DESTINATION bin)
-install(DIRECTORY reference/ DESTINATION share/servsysbench/reference)
