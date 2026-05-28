@@ -5,8 +5,6 @@
 
 typedef enum { SSB_MODE_VALIDATE, SSB_MODE_PEAK, SSB_MODE_SUSTAINED } run_mode_t;
 
-#define SSB_MAX_BIND 256
-
 typedef struct {
     run_mode_t mode;
     bool mitigations_off;
@@ -16,9 +14,6 @@ typedef struct {
     int num_instances;
     char **bench_filter;
     int bench_filter_count;
-    int copies;
-    int bind_list[SSB_MAX_BIND];
-    int bind_count;
 } run_config_t;
 
 typedef struct {

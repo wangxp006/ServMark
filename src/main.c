@@ -14,23 +14,27 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <errno.h>
-#include <dirent.h>
 
 #define MAX_BENCH_FILTER 64
 
 static void print_usage(const char *prog) {
     printf("ServMark %s\n", SSB_VERSION);
     printf("Usage: %s [options]\n", prog);
-    printf("  --action submit|run    Submit: create run dir. Run: execute benchmarks\n");
-    printf("  --rundir <dir>         Run directory path\n");
-    printf("  --config <file>        Config file (default: config/default.cfg)\n");
-    printf("  --mode <peak|sustained> Run mode\n");
-    printf("  --tier <1|2|3>         Tier filter\n");
-    printf("  --category <C1..C15>   Category filter\n");
-    printf("  --threads <N>          Parallel instances\n");
-    printf("  --output-dir <dir>     Output directory\n");
-    printf("  --dry-run              List benchmarks\n");
-    printf("  --validate             System validation\n");
+    printf("\nActions:\n");
+    printf("  --action submit          Create run directory with benchmark scripts\n");
+    printf("  --action run             Execute benchmarks from run directory\n");
+    printf("  --rundir <dir>           Run directory for submit/run actions\n");
+    printf("\nOptions:\n");
+    printf("  --config <file>          Config file (default: config/default.cfg)\n");
+    printf("  --mode <peak|sustained>  Run mode (default: peak)\n");
+    printf("  --validate               Run system validation only\n");
+    printf("  --tier <1|2|3>           Run specific tier only (default: 1)\n");
+    printf("  --category <C1..C15>     Run specific category only\n");
+    printf("  --threads <N>            Run N parallel instances (one per core)\n");
+    printf("  --mitigations-off        Run with mitigations=off reference\n");
+    printf("  --output-dir <dir>       Output directory (default: .)\n");
+    printf("  --dry-run                List benchmarks without running\n");
+    printf("  --help                   Show this help\n");
 }
 
 static char *trim(char *s) {
@@ -44,7 +48,7 @@ static char *trim(char *s) {
 
 static int parse_config(const char *path, run_config_t *cfg, char ***bench_filter, int *bf_count) {
     FILE *f = fopen(path, "r");
-    if (!f) { fprintf(stderr, "Warning: cannot open '%s'\n", path); return -1; }
+    if (!f) { fprintf(stderr, "Warning: cannot open config '%s'\n", path); return -1; }
     char line[512];
     while (fgets(line, sizeof(line), f)) {
         char *p = trim(line);
@@ -60,15 +64,6 @@ static int parse_config(const char *path, run_config_t *cfg, char ***bench_filte
             else cfg->mode = SSB_MODE_PEAK;
         } else if (strcmp(key, "threads") == 0) {
             cfg->num_instances = atoi(value);
-        } else if (strcmp(key, "copies") == 0) {
-            cfg->copies = atoi(value);
-        } else if (strcmp(key, "bind") == 0) {
-            cfg->bind_count = 0;
-            char *save, *tok = strtok_r(value, " \t", &save);
-            while (tok && cfg->bind_count < SSB_MAX_BIND) {
-                cfg->bind_list[cfg->bind_count++] = atoi(tok);
-                tok = strtok_r(NULL, " \t", &save);
-            }
         } else if (strcmp(key, "output_dir") == 0) {
             cfg->output_dir = strdup(value);
         } else if (strcmp(key, "tier") == 0) {
@@ -113,7 +108,7 @@ static void filter_benchmarks(const run_config_t *cfg, const benchmark_t **bench
     *out_count = kept;
 }
 
-/* ── submit: SPEC-style with copies + bind ── */
+/* ── submit ── */
 static int action_submit(const char *rundir, const char *config_path,
                          run_config_t *cfg, const char *bin_path) {
     mkdir(rundir, 0755);
@@ -130,7 +125,6 @@ static int action_submit(const char *rundir, const char *config_path,
     int count;
     filter_benchmarks(cfg, benchmarks, total, selected, &count);
 
-    int copies = cfg->copies > 0 ? cfg->copies : 1;
     int n_threads = cfg->num_instances > 0 ? cfg->num_instances : SSB_NUM_CPUS();
 
     char buf[512];
@@ -138,7 +132,8 @@ static int action_submit(const char *rundir, const char *config_path,
     FILE *list = fopen(buf, "w");
     if (list) {
         fprintf(list, "# ServMark Benchmark List\n");
-        fprintf(list, "# copies=%d bind_count=%d\n\n", copies, cfg->bind_count);
+        fprintf(list, "# threads=%d tier=%d\n\n",
+                n_threads, __builtin_ctz(cfg->tier_mask));
     }
 
     for (int i = 0; i < count; i++) {
@@ -146,36 +141,11 @@ static int action_submit(const char *rundir, const char *config_path,
         snprintf(buf, sizeof(buf), "%s/%s", rundir, b->name);
         mkdir(buf, 0755);
 
-        /* Write bench-level run_all.sh */
-        snprintf(buf, sizeof(buf), "%s/%s/run_all.sh", rundir, b->name);
-        FILE *ra = fopen(buf, "w");
-        if (ra) {
-            fprintf(ra, "#!/bin/sh\n# Run all copies of %s\n", b->name);
-            fprintf(ra, "cd \"$(dirname \"$0\")\"\n");
-            fprintf(ra, "for d in copy-*; do\n");
-            fprintf(ra, "  [ -x \"$d/run.sh\" ] && cd \"$d\" && ./run.sh && cd ..\n");
-            fprintf(ra, "done\n");
-            fclose(ra); chmod(buf, 0755);
-        }
-
-        /* Generate per-copy directories */
-        for (int c = 0; c < copies; c++) {
-            snprintf(buf, sizeof(buf), "%s/%s/copy-%04d", rundir, b->name, c);
-            mkdir(buf, 0755);
-
-            snprintf(buf, sizeof(buf), "%s/%s/copy-%04d/run.sh", rundir, b->name, c);
-            FILE *sh = fopen(buf, "w");
-            if (!sh) continue;
-
+        snprintf(buf, sizeof(buf), "%s/%s/run.sh", rundir, b->name);
+        FILE *sh = fopen(buf, "w");
+        if (sh) {
             fprintf(sh, "#!/bin/sh\n");
-            fprintf(sh, "# ServMark: %s  copy %d/%d\n", b->name, c, copies);
-
-            /* Bind to specific CPU if bind list provided */
-            if (c < cfg->bind_count)
-                fprintf(sh, "taskset -c %d $$\n", cfg->bind_list[c]);
-            else if (cfg->bind_count > 0)
-                fprintf(sh, "taskset -c %d $$\n", cfg->bind_list[c % cfg->bind_count]);
-
+            fprintf(sh, "# ServMark: %s (%s)\n", b->name, b->description);
             fprintf(sh, "cd \"$(dirname \"$0\")\"\n");
             fprintf(sh, "exec %s \\\n", bin_path);
             fprintf(sh, "  --category %s \\\n", b->category);
@@ -184,85 +154,62 @@ static int action_submit(const char *rundir, const char *config_path,
             fprintf(sh, "  --mode %s \\\n",
                     cfg->mode == SSB_MODE_PEAK ? "peak" : "sustained");
             fprintf(sh, "  --output-dir .\n");
-            fclose(sh); chmod(buf, 0755);
+            fclose(sh);
+            chmod(buf, 0755);
         }
-
         if (list) fprintf(list, "%s\n", b->name);
     }
     if (list) fclose(list);
 
-    /* Metadata */
     snprintf(buf, sizeof(buf), "%s/servmark.json", rundir);
     FILE *meta = fopen(buf, "w");
     if (meta) {
-        fprintf(meta, "{\"version\":\"%s\",\"copies\":%d,\"bind_count\":%d,\"benchmarks\":%d}\n",
-                SSB_VERSION, copies, cfg->bind_count, count);
+        fprintf(meta, "{\"version\":\"%s\",\"rundir\":\"%s\",\"binary\":\"%s\",\"threads\":%d,\"tier\":%d}\n",
+                SSB_VERSION, rundir, bin_path, n_threads, __builtin_ctz(cfg->tier_mask));
         fclose(meta);
     }
 
     printf("  Run directory: %s\n", rundir);
     printf("  Benchmarks:    %d selected\n", count);
-    printf("  Copies:        %d per benchmark\n", copies);
-    if (cfg->bind_count > 0)
-        printf("  Bind list:     %d CPUs (copy 0 → CPU %d)\n", cfg->bind_count, cfg->bind_list[0]);
+    printf("  Threads:       %d per instance\n", n_threads);
     printf("\n  Ready. Run with:\n");
     printf("    servmark --action run --rundir %s\n", rundir);
     free(selected);
     return 0;
 }
 
-/* ── run: execute per-copy scripts ── */
+/* ── run ── */
 static int action_run(const char *rundir) {
     char path[512];
     snprintf(path, sizeof(path), "%s/List.txt", rundir);
     FILE *list = fopen(path, "r");
-    if (!list) { fprintf(stderr, "Error: no List.txt in %s\n", rundir); return 1; }
+    if (!list) { fprintf(stderr, "Error: no List.txt in %s. Run 'submit' first.\n", rundir); return 1; }
 
     int total = 0, pass = 0, fail = 0;
     time_t start = time(NULL);
-
     printf("\n  ServMark %s  |  Run: %s\n", SSB_VERSION, rundir);
     printf("  ===========================================\n\n");
 
     char line[256];
     while (fgets(line, sizeof(line), list)) {
-        char *bname = trim(line);
-        if (*bname == '#' || *bname == '\0') continue;
+        char *p = trim(line);
+        if (*p == '#' || *p == '\0') continue;
+        snprintf(path, sizeof(path), "%s/%s/run.sh", rundir, p);
+        if (access(path, X_OK) != 0) { fprintf(stderr, "  SKIP %s\n", p); continue; }
 
-        /* Walk copy directories */
-        DIR *d = NULL;
-        char bench_dir[512];
-        snprintf(bench_dir, sizeof(bench_dir), "%s/%s", rundir, bname);
-        d = opendir(bench_dir);
-        if (!d) { fprintf(stderr, "  SKIP %s (dir not found)\n", bname); continue; }
+        printf("  [%3d] %-35s ", ++total, p); fflush(stdout);
 
-        int bench_ok = 0, bench_fail = 0;
-        struct dirent *de;
-        while ((de = readdir(d)) != NULL) {
-            if (strncmp(de->d_name, "copy-", 5) != 0) continue;
-            snprintf(path, sizeof(path), "%s/%s/run.sh", bench_dir, de->d_name);
-            if (access(path, X_OK) != 0) continue;
-
-            printf("  %-25s %-12s ", bname, de->d_name); fflush(stdout);
-
-            char log_path[512], cmd[512];
-            snprintf(log_path, sizeof(log_path), "%s/%s/log.txt", bench_dir, de->d_name);
-            snprintf(cmd, sizeof(cmd), "cd '%s/%s' && ./run.sh > log.txt 2>&1",
-                    bench_dir, de->d_name);
-
-            int ret = system(cmd);
-            total++;
-            if (ret == 0) { printf("OK\n"); pass++; bench_ok++; }
-            else { printf("FAILED (exit %d)\n", WEXITSTATUS(ret)); fail++; bench_fail++; }
-        }
-        closedir(d);
-        printf("  → %s: %d pass, %d fail\n\n", bname, bench_ok, bench_fail);
+        char cmd[512];
+        snprintf(cmd, sizeof(cmd), "cd '%s/%s' && ./run.sh > log.txt 2>&1", rundir, p);
+        int ret = system(cmd);
+        if (ret == 0) { printf("OK\n"); pass++; }
+        else { printf("FAILED (exit %d)\n", WEXITSTATUS(ret)); fail++; }
     }
     fclose(list);
 
     time_t elapsed = time(NULL) - start;
-    printf("  ===========================================\n");
-    printf("  Total copies: %d  Pass: %d  Fail: %d  Elapsed: %ldm%lds\n",
+    printf("\n  ===========================================\n");
+    printf("  Total: %d  Pass: %d  Fail: %d  Elapsed: %ldm%lds\n",
             total, pass, fail, elapsed / 60, elapsed % 60);
     return fail > 0 ? 1 : 0;
 }
@@ -274,8 +221,7 @@ int main(int argc, char *argv[]) {
     run_config_t config = {
         .mode = SSB_MODE_PEAK, .mitigations_off = false, .tier_mask = 2,
         .output_dir = ".", .reference_file = NULL, .category_filter = NULL,
-        .dry_run = false, .num_instances = 0, .copies = 1, .bind_count = 0,
-        .bench_filter = NULL, .bench_filter_count = 0,
+        .dry_run = false, .num_instances = 0, .bench_filter = NULL, .bench_filter_count = 0,
     };
     bool validate_only = false;
     const char *config_path = "config/default.cfg";
@@ -368,11 +314,11 @@ int main(int argc, char *argv[]) {
         free(bench_filter); return 0;
     }
 
-    printf("\n  ServMark %s  |  Mode: %s  |  Tier %d  |  Instances: %d",
+    printf("\n  ServMark %s  |  Mode: %s  |  Tier %d  |  Instances: %d\n",
             SSB_VERSION, config.mode == SSB_MODE_PEAK ? "peak" : "sustained",
             __builtin_ctz(config.tier_mask), config.num_instances);
-    if (bench_filter_count > 0) printf("  |  Benchmarks: %d", bench_filter_count);
-    printf("\n  ===========================================\n\n");
+    printf("  Config: %s\n", config_path);
+    printf("  ===========================================\n\n");
 
     run_result_t *result = NULL;
     if (harness_run(&config, &result) != 0 || !result) {
