@@ -1,4 +1,4 @@
-#include "servsysbench.h"
+#include "servmark.h"
 #include "harness.h"
 #include "system.h"
 #include "output.h"
@@ -11,7 +11,7 @@
 #include <time.h>
 
 static void print_usage(const char *prog) {
-    printf("ServSysBench %s\n", SSB_VERSION);
+    printf("ServMark %s\n", SSB_VERSION);
     printf("Usage: %s [options]\n", prog);
     printf("Options:\n");
     printf("  --mode <peak|sustained>  Run mode (default: peak)\n");
@@ -98,7 +98,7 @@ int main(int argc, char *argv[]) {
         return 0;
     }
 
-    printf("\n  ServSysBench %s  |  Mode: %s  |  Tier %d  |  Instances: %d\n",
+    printf("\n  ServMark %s  |  Mode: %s  |  Tier %d  |  Instances: %d\n",
             SSB_VERSION,
             config.mode == SSB_MODE_PEAK ? "peak" : "sustained",
             __builtin_ctz(config.tier_mask),

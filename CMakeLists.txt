@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ServSysBench VERSION 1.0.0 LANGUAGES C)
+project(ServMark VERSION 1.0.0 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -88,12 +88,12 @@ add_library(ssbbench_net_virt STATIC
 target_link_libraries(ssbbench_net_virt ssbcore)
 
 # Main executable - use whole-archive to keep benchmark constructors
-add_executable(servsysbench src/main.c)
-target_link_libraries(servsysbench
+add_executable(servmark src/main.c)
+target_link_libraries(servmark
     -Wl,--whole-archive
     ssbbench_cpu ssbbench_memory ssbbench_process ssbbench_io ssbbench_net_virt
     -Wl,--no-whole-archive
     ssbcore
 )
 
-install(TARGETS servsysbench DESTINATION bin)
+install(TARGETS servmark DESTINATION bin)

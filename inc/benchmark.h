@@ -1,6 +1,6 @@
 #ifndef SSB_BENCHMARK_H
 #define SSB_BENCHMARK_H
-#include "servsysbench.h"
+#include "servmark.h"
 
 typedef struct {
     double primary_metric;

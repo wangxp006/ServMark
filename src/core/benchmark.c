@@ -1,4 +1,4 @@
-#include "servsysbench.h"
+#include "servmark.h"
 #include "benchmark.h"
 #include <stdlib.h>
 #include <string.h>

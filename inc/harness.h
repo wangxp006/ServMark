@@ -1,6 +1,6 @@
 #ifndef SSB_HARNESS_H
 #define SSB_HARNESS_H
-#include "servsysbench.h"
+#include "servmark.h"
 #include "benchmark.h"
 
 typedef enum { SSB_MODE_VALIDATE, SSB_MODE_PEAK, SSB_MODE_SUSTAINED } run_mode_t;

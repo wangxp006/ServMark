@@ -1,6 +1,6 @@
 #ifndef SSB_STATS_H
 #define SSB_STATS_H
-#include "servsysbench.h"
+#include "servmark.h"
 #include "benchmark.h"
 
 int stats_compute(const double *values, int count, benchmark_stats_t *out);

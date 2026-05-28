@@ -19,7 +19,7 @@ int output_provenance(const run_result_t *result, const char *path) {
     if (!f) return -1;
 
     fprintf(f, "{\n");
-    fprintf(f, "  \"servsysbench_version\": \"%s\",\n", SSB_VERSION);
+    fprintf(f, "  \"servmark_version\": \"%s\",\n", SSB_VERSION);
     fprintf(f, "  \"run_id\": \"%s\",\n", result->run_id);
     fprintf(f, "  \"run_mode\": \"%s\",\n",
             result->config.mode == SSB_MODE_PEAK ? "peak" : "sustained");
@@ -87,7 +87,7 @@ int output_terminal_summary(const run_result_t *result) {
 
     printf("\n");
     printf("╔══════════════════════════════════════════════════════════════╗\n");
-    printf("║  ServSysBench %-48s ║\n", SSB_VERSION);
+    printf("║  ServMark %-48s ║\n", SSB_VERSION);
     printf("║  Mode: %-6s    Elapsed: %dm%02ds                          ║\n",
             result->config.mode == SSB_MODE_PEAK ? "peak" : "sustained",
             min, sec);
@@ -118,8 +118,8 @@ int output_html_report(const run_result_t *result, const char *path) {
     if (!f) return -1;
 
     fprintf(f, "<!DOCTYPE html><html><head><meta charset=\"UTF-8\">"
-            "<title>ServSysBench Results</title></head><body>\n");
-    fprintf(f, "<h1>ServSysBench %s Results</h1>\n", SSB_VERSION);
+            "<title>ServMark Results</title></head><body>\n");
+    fprintf(f, "<h1>ServMark %s Results</h1>\n", SSB_VERSION);
     fprintf(f, "<p>Run ID: %s | Mode: %s</p>\n",
             result->run_id,
             result->config.mode == SSB_MODE_PEAK ? "Peak" : "Sustained");

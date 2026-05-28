@@ -1,6 +1,6 @@
 #ifndef SSB_SYSTEM_H
 #define SSB_SYSTEM_H
-#include "servsysbench.h"
+#include "servmark.h"
 #include <stdio.h>
 
 typedef struct { int id, cpu_count, *cpu_list; size_t memory_kb; int distance[16]; } numa_node_t;
