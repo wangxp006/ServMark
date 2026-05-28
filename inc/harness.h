@@ -12,6 +12,8 @@ typedef struct {
     const char *output_dir, *reference_file, *category_filter;
     bool dry_run;
     int num_instances;
+    char **bench_filter;
+    int bench_filter_count;
 } run_config_t;
 
 typedef struct {

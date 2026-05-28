@@ -5,6 +5,7 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
 set(BASELINE_CFLAGS "-O2 -g -fno-omit-frame-pointer -fno-lto")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -D_GNU_SOURCE")
 set(CMAKE_C_FLAGS_RELEASE "${BASELINE_CFLAGS}")
 
 option(SSB_USE_MARCH_NATIVE "Use -march=native (non-canonical)" OFF)

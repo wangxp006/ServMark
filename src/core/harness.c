@@ -191,6 +191,17 @@ int harness_run(const run_config_t *config, run_result_t **result_out) {
         if (config->category_filter &&
             strcmp(b->category, config->category_filter) != 0) continue;
 
+        /* Benchmark-level filter from config file */
+        if (config->bench_filter_count > 0) {
+            bool found = false;
+            for (int j = 0; j < config->bench_filter_count; j++) {
+                if (strcmp(b->name, config->bench_filter[j]) == 0) {
+                    found = true; break;
+                }
+            }
+            if (!found) continue;
+        }
+
         subtest_result_t *sr = &result->subtests[result->subtest_count];
         sr->bench = b;
 

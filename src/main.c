@@ -9,11 +9,15 @@
 #include <string.h>
 #include <getopt.h>
 #include <time.h>
+#include <ctype.h>
+
+#define MAX_BENCH_FILTER 64
 
 static void print_usage(const char *prog) {
     printf("ServMark %s\n", SSB_VERSION);
     printf("Usage: %s [options]\n", prog);
     printf("Options:\n");
+    printf("  --config <file>          Config file (default: config/default.cfg)\n");
     printf("  --mode <peak|sustained>  Run mode (default: peak)\n");
     printf("  --validate               Run system validation only\n");
     printf("  --tier <1|2|3>           Run specific tier only (default: 1)\n");
@@ -24,6 +28,90 @@ static void print_usage(const char *prog) {
     printf("  --reference <file>       Frozen reference file path\n");
     printf("  --dry-run                List benchmarks without running\n");
     printf("  --help                   Show this help\n");
+}
+
+static char *trim(char *s) {
+    while (isspace((unsigned char)*s)) s++;
+    if (*s == 0) return s;
+    char *end = s + strlen(s) - 1;
+    while (end > s && isspace((unsigned char)*end)) end--;
+    end[1] = '\0';
+    return s;
+}
+
+/* Parse SPEC-style config file. Sets defaults before CLI overrides. */
+static int parse_config(const char *path, run_config_t *cfg, char ***bench_filter, int *bf_count) {
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        fprintf(stderr, "Warning: cannot open config '%s', using defaults\n", path);
+        return -1;
+    }
+
+    char line[512];
+    int lineno = 0;
+
+    while (fgets(line, sizeof(line), f)) {
+        lineno++;
+        char *p = trim(line);
+        if (*p == '#' || *p == '\0') continue;
+
+        /* Split at '=' */
+        char *eq = strchr(p, '=');
+        if (!eq) continue;
+        *eq = '\0';
+        char *key = trim(p);
+        char *value = trim(eq + 1);
+
+        if (strcmp(key, "runmode") == 0) {
+            if (strcmp(value, "sustained") == 0) cfg->mode = SSB_MODE_SUSTAINED;
+            else cfg->mode = SSB_MODE_PEAK;
+        } else if (strcmp(key, "threads") == 0) {
+            cfg->num_instances = atoi(value);
+        } else if (strcmp(key, "output_dir") == 0) {
+            cfg->output_dir = strdup(value);
+        } else if (strcmp(key, "tier") == 0) {
+            cfg->tier_mask = 1 << atoi(value);
+        } else if (strcmp(key, "category") == 0) {
+            if (value[0]) cfg->category_filter = strdup(value);
+        } else if (strcmp(key, "mitigations_off") == 0) {
+            cfg->mitigations_off = (atoi(value) != 0);
+        } else if (strcmp(key, "reportable") == 0) {
+            /* reportable flag — for future use */
+        } else if (strcmp(key, "convergence") == 0) {
+            /* convergence target — for future use */
+        } else if (strcmp(key, "max_runtime") == 0) {
+            /* max runtime — for future use */
+        } else if (strcmp(key, "min_iterations") == 0) {
+            /* min iterations — for future use */
+        } else if (strcmp(key, "max_iterations") == 0) {
+            /* max iterations — for future use */
+        } else if (strcmp(key, "cooldown_sec") == 0) {
+            /* cooldown — for future use */
+        } else if (strcmp(key, "march_native") == 0) {
+            /* march native — for future use */
+        } else if (strcmp(key, "isa_baseline") == 0) {
+            /* isa baseline — for future use */
+        } else if (strcmp(key, "require_validate") == 0) {
+            /* require validate — for future use */
+        } else if (strcmp(key, "benchmark") == 0) {
+            /* Format: benchmark = C1 : name : description
+             * Extract the benchmark name (second colon-separated field) */
+            char *c1 = strchr(value, ':');
+            if (c1) {
+                *c1 = '\0';
+                char *name = trim(c1 + 1);
+                char *c2 = strchr(name, ':');
+                if (c2) *c2 = '\0';
+                name = trim(name);
+                if (*bf_count < MAX_BENCH_FILTER) {
+                    (*bench_filter)[*bf_count] = strdup(name);
+                    (*bf_count)++;
+                }
+            }
+        }
+    }
+    fclose(f);
+    return 0;
 }
 
 int main(int argc, char *argv[]) {
@@ -40,8 +128,12 @@ int main(int argc, char *argv[]) {
         .num_instances = 0,
     };
     bool validate_only = false;
+    const char *config_path = "config/default.cfg";
+    char **bench_filter = malloc(MAX_BENCH_FILTER * sizeof(char *));
+    int bench_filter_count = 0;
 
     static struct option long_opts[] = {
+        {"config", required_argument, 0, 'C'},
         {"mode", required_argument, 0, 'm'},
         {"validate", no_argument, 0, 'v'},
         {"tier", required_argument, 0, 't'},
@@ -56,8 +148,9 @@ int main(int argc, char *argv[]) {
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "m:vt:c:T:xo:r:nh", long_opts, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "C:m:vt:c:T:xo:r:nh", long_opts, NULL)) != -1) {
         switch (opt) {
+        case 'C': config_path = optarg; break;
         case 'm':
             if (strcmp(optarg, "sustained") == 0) config.mode = SSB_MODE_SUSTAINED;
             else config.mode = SSB_MODE_PEAK;
@@ -72,16 +165,24 @@ int main(int argc, char *argv[]) {
         case 'o': config.output_dir = optarg; break;
         case 'r': config.reference_file = optarg; break;
         case 'n': config.dry_run = true; break;
-        case 'h': print_usage(argv[0]); return 0;
-        default: print_usage(argv[0]); return 1;
+        case 'h': print_usage(argv[0]); free(bench_filter); return 0;
+        default: print_usage(argv[0]); free(bench_filter); return 1;
         }
     }
 
+    /* Parse config file for defaults */
+    parse_config(config_path, &config, &bench_filter, &bench_filter_count);
+
+    /* CLI overrides */
     if (config.num_instances <= 0)
         config.num_instances = SSB_NUM_CPUS();
 
+    config.bench_filter = bench_filter;
+    config.bench_filter_count = bench_filter_count;
+
     if (validate_only) {
         validate_system(stdout);
+        free(bench_filter);
         return 0;
     }
 
@@ -92,23 +193,47 @@ int main(int argc, char *argv[]) {
         printf("Registered benchmarks (%d total):\n", count);
         for (int i = 0; i < count; i++) {
             const benchmark_t *b = benchmarks[i];
+
+            /* Filter by config benchmark list if specified */
+            if (bench_filter_count > 0) {
+                bool found = false;
+                for (int j = 0; j < bench_filter_count; j++) {
+                    if (strcmp(b->name, bench_filter[j]) == 0) {
+                        found = true; break;
+                    }
+                }
+                if (!found) continue;
+            }
+
             printf("  [%s] %-30s \"%s\" (Tier %d)\n",
                     b->category, b->name, b->description, b->tier);
         }
+
+        if (bench_filter_count > 0)
+            printf("\n  (Filtered: %d benchmarks selected from config)\n", bench_filter_count);
+
+        for (int j = 0; j < bench_filter_count; j++) free(bench_filter[j]);
+        free(bench_filter);
         return 0;
     }
 
-    printf("\n  ServMark %s  |  Mode: %s  |  Tier %d  |  Instances: %d\n",
+    printf("\n  ServMark %s  |  Mode: %s  |  Tier %d  |  Instances: %d",
             SSB_VERSION,
             config.mode == SSB_MODE_PEAK ? "peak" : "sustained",
             __builtin_ctz(config.tier_mask),
             config.num_instances);
+    if (bench_filter_count > 0)
+        printf("  |  Benchmarks: %d", bench_filter_count);
+    printf("\n");
+    printf("  Config: %s\n", config_path);
     printf("  ───────────────────────────────────────────\n\n");
 
     run_result_t *result = NULL;
     int ret = harness_run(&config, &result);
     if (ret != 0 || !result) {
         fprintf(stderr, "Error: benchmark run failed\n");
+        for (int j = 0; j < bench_filter_count; j++) free(bench_filter[j]);
+        free(bench_filter);
         return 1;
     }
 
@@ -138,5 +263,7 @@ int main(int argc, char *argv[]) {
     output_terminal_summary(result);
 
     harness_free_result(result);
+    for (int j = 0; j < bench_filter_count; j++) free(bench_filter[j]);
+    free(bench_filter);
     return 0;
 }
