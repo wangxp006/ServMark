@@ -4,6 +4,15 @@ project(ServMark VERSION 1.0.0 LANGUAGES C)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
+# Baseline compiler flags:
+# -O2: conservative optimization, balances performance with reproducibility.
+#   NOTE: GCC -O2 does NOT enable auto-vectorization (-ftree-vectorize).
+#   Vectorizable benchmarks (fp_gemm, fp_fft) will run as scalar code on
+#   GCC, producing ~4-8x lower results vs -O3 or clang -O2. This is a
+#   deliberate design choice for baseline cross-compiler comparability.
+# -fno-omit-frame-pointer: enables accurate profiling/perf backtraces.
+#   x86 penalty ~3-7% (one GPR reserved), ARM64 virtually no penalty.
+# -fno-lto: prevents cross-TU optimization, stable per-benchmark isolation.
 set(BASELINE_CFLAGS "-O2 -g -fno-omit-frame-pointer -fno-lto")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -D_GNU_SOURCE")
 set(CMAKE_C_FLAGS_RELEASE "${BASELINE_CFLAGS}")
