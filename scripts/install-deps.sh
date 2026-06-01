@@ -53,7 +53,7 @@ register_pkgs pacman  "gcc make"            "cmake" "pkg-config" "hwloc"        
 register_pkgs apk     "gcc g++ make"        "cmake" "pkgconfig"  "hwloc-dev"      "numactl-dev"  "openssl-dev"     "zstd-dev"
 
 # Probe order: preferred first
-PROBE_ORDER=("apt-get" "dnf" "yum" "zypper" "pacman" "apk")
+PROBE_ORDER=("apt-get" "yum" "dnf" "zypper" "pacman" "apk")
 
 detect_pkg_manager() {
     for probe in "${PROBE_ORDER[@]}"; do
