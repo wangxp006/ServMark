@@ -135,6 +135,8 @@ double scoring_overall_score(double t, double l, double e) {
 }
 
 double scoring_mitigation_tax(double mitigated, double unmitigated) {
+    /* Returns (mitigated/unmitigated)-1.0. Negative = mitigations hurt (expected).
+     * E.g. -0.20 means 20% overhead. Zero = no impact. */
     if (unmitigated <= 0) return 0.0;
     return (mitigated / unmitigated) - 1.0;
 }

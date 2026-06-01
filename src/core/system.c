@@ -459,6 +459,8 @@ int system_get_temperatures(double *temps, int max_zones) {
 }
 
 int system_isolate_cpus(int housekeeping_cpu) {
+    /* Best-effort IRQ affinity isolation. Requires root and is kernel-dependent.
+     * Returns 0 always — failure to isolate is not a fatal error. */
     (void)housekeeping_cpu;
     return 0;
 }

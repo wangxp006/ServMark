@@ -121,7 +121,19 @@ int main(int argc, char *argv[]) {
         .num_instances = 0,
     };
     bool validate_only = false;
-    const char *config_path = "config/default.cfg";
+    /* Search config in: XDG_CONFIG_HOME, /etc, then cwd */
+    const char *config_path = NULL;
+    const char *xdg = getenv("XDG_CONFIG_HOME");
+    char xdg_path[512];
+    if (!xdg && getenv("HOME")) {
+        snprintf(xdg_path, sizeof(xdg_path), "%s/.config/servmark/default.cfg", getenv("HOME"));
+        xdg = xdg_path;
+    }
+    const char *search[] = {xdg, "/etc/servmark/default.cfg", "config/default.cfg"};
+    for (int si = 0; si < 3; si++) {
+        if (search[si] && access(search[si], R_OK) == 0) { config_path = search[si]; break; }
+    }
+    if (!config_path) config_path = "config/default.cfg";
     char **bench_filter = malloc(MAX_BENCH_FILTER * sizeof(char *));
     int bench_filter_count = 0;
 
