@@ -1,6 +1,10 @@
 #!/bin/bash
 # ServMark dependency installer
-# Supports: CentOS/RHEL/Fedora, Ubuntu/Debian, openSUSE
+# Detects OS family via /etc/os-release ID_LIKE field.
+# RPM family:  CentOS, RHEL, Fedora, Rocky, Alma, Anolis, openEuler, Kylin,
+#              UOS server, Oracle Linux, Scientific Linux, Amazon Linux, etc.
+# DEB family:  Ubuntu, Debian, Deepin, UOS desktop, Linux Mint, etc.
+# SUSE family: openSUSE, SLES
 
 set -e
 
@@ -10,22 +14,29 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-detect_distro() {
-    if [ -f /etc/os-release ]; then
-        . /etc/os-release
-        echo "$ID"
-    elif [ -f /etc/redhat-release ]; then
-        echo "centos"
-    else
-        echo "unknown"
-    fi
-}
+# Source /etc/os-release for ID, ID_LIKE, VERSION_ID
+if [ -f /etc/os-release ]; then
+    . /etc/os-release
+else
+    echo "Cannot detect OS: /etc/os-release not found"
+    exit 1
+fi
 
-DISTRO=$(detect_distro)
-echo "Detected distribution: $DISTRO"
+echo "Detected: $NAME ($ID), like: ${ID_LIKE:-none}"
 
-case "$DISTRO" in
-    ubuntu|debian)
+# Determine package family from ID_LIKE (most reliable for derivatives)
+# Fall back to ID if ID_LIKE is empty
+FAMILY=""
+if echo "$ID_LIKE $ID" | grep -qE 'fedora|rhel|centos'; then
+    FAMILY="rpm"
+elif echo "$ID_LIKE $ID" | grep -qE 'debian|ubuntu'; then
+    FAMILY="deb"
+elif echo "$ID_LIKE $ID" | grep -qE 'suse'; then
+    FAMILY="suse"
+fi
+
+case "$FAMILY" in
+    deb)
         echo "Installing dependencies via apt..."
         apt-get update
         apt-get install -y \
@@ -38,12 +49,15 @@ case "$DISTRO" in
             libzstd-dev
         ;;
 
-    centos|rhel|fedora|rocky|almalinux)
+    rpm)
         echo "Installing dependencies via dnf/yum..."
         if command -v dnf &>/dev/null; then
             PKG_MGR="dnf"
-        else
+        elif command -v yum &>/dev/null; then
             PKG_MGR="yum"
+        else
+            echo "Neither dnf nor yum found. Please install packages manually."
+            exit 1
         fi
         $PKG_MGR install -y \
             gcc \
@@ -57,7 +71,7 @@ case "$DISTRO" in
             libzstd-devel
         ;;
 
-    opensuse*|sles)
+    suse)
         echo "Installing dependencies via zypper..."
         zypper --non-interactive install \
             gcc \
@@ -72,29 +86,24 @@ case "$DISTRO" in
         ;;
 
     *)
-        echo "Unknown distribution: $DISTRO"
+        echo "Could not determine package family from ID='$ID' ID_LIKE='$ID_LIKE'"
         echo ""
-        echo "Please install these packages manually:"
-        echo "  - C11 compiler (gcc or clang)"
-        echo "  - cmake >= 3.16"
-        echo "  - hwloc development library"
-        echo "  - libnuma development library"
-        echo "  - OpenSSL development library (libcrypto)"
-        echo "  - libzstd development library"
+        echo "Please install these packages manually and re-run:"
         echo ""
-        echo "Ubuntu/Debian:"
-        echo "  apt install build-essential cmake pkg-config libhwloc-dev libnuma-dev libssl-dev libzstd-dev"
+        echo "  DEB (Ubuntu/Debian/Deepin/Mint):"
+        echo "    apt install build-essential cmake pkg-config libhwloc-dev libnuma-dev libssl-dev libzstd-dev"
         echo ""
-        echo "CentOS/RHEL/Fedora:"
-        echo "  dnf install gcc make cmake pkgconfig hwloc-devel numactl-devel openssl-devel libzstd-devel"
+        echo "  RPM (CentOS/RHEL/Fedora/Rocky/Alma/Anolis/openEuler/Kylin):"
+        echo "    dnf install gcc gcc-c++ make cmake pkgconfig hwloc-devel numactl-devel openssl-devel libzstd-devel"
         echo ""
-        echo "openSUSE:"
-        echo "  zypper install gcc make cmake pkg-config hwloc-devel libnuma-devel libopenssl-devel libzstd-devel"
+        echo "  SUSE (openSUSE/SLES):"
+        echo "    zypper install gcc gcc-c++ make cmake pkg-config hwloc-devel libnuma-devel libopenssl-devel libzstd-devel"
         exit 1
         ;;
 esac
 
 echo ""
 echo "All dependencies installed."
-echo "Now build ServMark:"
+echo ""
+echo "Build ServMark:"
 echo "  mkdir build && cd build && cmake .. && make -j\$(nproc)"
