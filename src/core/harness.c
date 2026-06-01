@@ -44,7 +44,9 @@ static int run_benchmark_instance(const benchmark_t *bench, double *values_out, 
     int min_runtime = bench->min_runtime_sec > 0 ? bench->min_runtime_sec : SSB_MIN_RUNTIME_SEC;
     int max_runtime = bench->max_runtime_sec > 0 ? bench->max_runtime_sec : SSB_MAX_RUNTIME_SEC;
 
-    time_t wall_start = time(NULL);
+    struct timespec wall_start, cpu_start;
+    clock_gettime(CLOCK_MONOTONIC, &wall_start);
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &cpu_start);
     int iter = 0;
 
     while (iter < max_iter) {
@@ -53,15 +55,25 @@ static int run_benchmark_instance(const benchmark_t *bench, double *values_out, 
         if (ret != 0) { bench->cleanup(state); return ret; }
         values_out[iter++] = m.primary_metric;
 
-        time_t elapsed = time(NULL) - wall_start;
+        struct timespec wall_now;
+        clock_gettime(CLOCK_MONOTONIC, &wall_now);
+        double wall_elapsed = (wall_now.tv_sec - wall_start.tv_sec)
+            + (wall_now.tv_nsec - wall_start.tv_nsec) / 1e9;
         if (iter >= min_iter) {
             double mean, stddev;
             stats_mean_stddev(values_out, iter, &mean, &stddev);
             double sem = stddev / sqrt((double)iter);
             double sem_rel = (mean != 0) ? sem / fabs(mean) : 1.0;
-            if (sem_rel <= target && elapsed >= min_runtime) break;
-            if (elapsed >= max_runtime) break;
+            if (sem_rel <= target && wall_elapsed >= min_runtime) break;
         }
+        /* Max runtime: use wall clock as primary guard (preempted CPU time skews) */
+        if (wall_elapsed >= max_runtime) break;
+        /* Also check CPU time to prevent infinite loops on preempted systems */
+        struct timespec cpu_now;
+        clock_gettime(CLOCK_THREAD_CPUTIME_ID, &cpu_now);
+        double cpu_elapsed = (cpu_now.tv_sec - cpu_start.tv_sec)
+            + (cpu_now.tv_nsec - cpu_start.tv_nsec) / 1e9;
+        if (cpu_elapsed > max_runtime * 2) break;
     }
 
     bench->cleanup(state);
