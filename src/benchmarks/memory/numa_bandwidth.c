@@ -5,6 +5,7 @@
 #include <numa.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <stdint.h>
 
 #define BUF_MB 128
 #define BUF_SIZE (BUF_MB * 1024 * 1024)
@@ -22,10 +23,13 @@ typedef struct {
 
 static void *bw_worker(void *arg) {
     bw_thread_arg_t *a = (bw_thread_arg_t *)arg;
-    volatile char sink = 0;
-    for (size_t i = a->start; i < a->end; i += 8)
-        sink += a->buf[i];
-    __asm__ __volatile__("" : "+r"(sink));
+    uint64_t *buf64 = (uint64_t *)a->buf;
+    size_t start = a->start / sizeof(uint64_t);
+    size_t end = a->end / sizeof(uint64_t);
+    uint64_t sink = 0;
+    for (size_t i = start; i < end; i++)
+        sink += buf64[i];
+    __asm__ __volatile__("" : "+r"(sink) : : "memory");
     return NULL;
 }
 
@@ -66,7 +70,11 @@ static int numa_bandwidth_measure(void *state, measurement_t *result) {
     for (int t = 0; t < n; t++) {
         args[t] = (bw_thread_arg_t){s->buffer, t * chunk, (t + 1) * chunk};
         pthread_create(&threads[t], NULL, bw_worker, &args[t]);
+        /* Pin thread to the target NUMA node */
+        numa_run_on_node(s->node);
     }
+    /* Reset NUMA policy to default */
+    numa_set_localalloc();
     for (int t = 0; t < n; t++)
         pthread_join(threads[t], NULL);
 

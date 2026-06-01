@@ -3,6 +3,7 @@
 #include <string.h>
 #include <time.h>
 #include <numa.h>
+#include <stdint.h>
 
 #define BUF_MB 64
 #define BUF_SIZE (BUF_MB * 1024 * 1024)
@@ -22,9 +23,12 @@ static void setup_chase(char *buf, size_t size, int stride) {
         size_t j = rand() % (i + 1);
         int tmp = order[i]; order[i] = order[j]; order[j] = tmp;
     }
-    for (size_t i = 0; i < slots - 1; i++)
-        *(int64_t *)(buf + order[i] * stride) = (int64_t)(buf + order[i + 1] * stride);
-    *(int64_t *)(buf + order[slots - 1] * stride) = (int64_t)(buf + order[0] * stride);
+    for (size_t i = 0; i < slots - 1; i++) {
+        uintptr_t pv = (uintptr_t)(buf + order[i + 1] * stride);
+        memcpy(buf + order[i] * stride, &pv, sizeof(pv));
+    }
+    uintptr_t pv_first = (uintptr_t)(buf + order[0] * stride);
+    memcpy(buf + order[slots - 1] * stride, &pv_first, sizeof(pv_first));
     free(order);
 }
 
@@ -42,9 +46,12 @@ static int numa_latency_init(void **state) {
 
 static int numa_latency_warmup(void *state) {
     numa_latency_state_t *s = (numa_latency_state_t *)state;
-    volatile int64_t *p = (volatile int64_t *)s->buffer;
-    for (int i = 0; i < 50000; i++)
-        p = (volatile int64_t *)*p;
+    volatile uintptr_t *p = (volatile uintptr_t *)s->buffer;
+    for (int i = 0; i < 50000; i++) {
+        uintptr_t _next;
+        memcpy(&_next, (void*)p, sizeof(_next));
+        p = (volatile uintptr_t *)_next;
+    }
     __asm__ __volatile__("" : "+r"(p));
     return 0;
 }
@@ -53,12 +60,19 @@ static int numa_latency_measure(void *state, measurement_t *result) {
     numa_latency_state_t *s = (numa_latency_state_t *)state;
     struct timespec t0, t1;
 
-    volatile int64_t *p = (volatile int64_t *)s->buffer;
+    /* Pin thread to the target NUMA node */
+    numa_run_on_node(s->node);
+    numa_set_localalloc();
+
+    volatile uintptr_t *p = (volatile uintptr_t *)s->buffer;
 
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
-    for (int i = 0; i < CHASES; i++)
-        p = (volatile int64_t *)*p;
+    for (int i = 0; i < CHASES; i++) {
+        uintptr_t _next;
+        memcpy(&_next, (void*)p, sizeof(_next));
+        p = (volatile uintptr_t *)_next;
+    }
 
     clock_gettime(CLOCK_MONOTONIC, &t1);
     __asm__ __volatile__("" : "+r"(p));
@@ -80,7 +94,7 @@ static int numa_latency_cleanup(void *state) {
 benchmark_t bench_numa_latency = {
     .name = "numa-latency",
     .category = "C5",
-    .description = "NUMA node 0 local memory latency",
+    .description = "NUMA node 0 local memory latency (pin to node, cross-node via separate benchmark)",
     .tier = 1,
     .primary_metric_name = "ns/chase",
     .higher_is_better = false,

@@ -5,8 +5,12 @@
 #include <pthread.h>
 #include <sched.h>
 #include <unistd.h>
+#include <stdio.h>
 
-#define ARRAY_SIZE (16 * 1024 * 1024)
+/* 64M doubles = 512MB per array. Total working set = 1.5GB.
+ * This exceeds L3 on all current server CPUs (max ~480MB Granite Ridge).
+ * Standard STREAM rule: working set should be 4x largest cache. */
+#define ARRAY_SIZE (64 * 1024 * 1024)
 
 typedef struct {
     double *a, *b, *c;
@@ -23,6 +27,8 @@ static void *stream_worker(void *arg) {
     stream_thread_arg_t *ta = (stream_thread_arg_t *)arg;
     size_t start = ta->tid * ta->chunk;
     size_t end = start + ta->chunk;
+    /* Last thread picks up remainder */
+    if (ta->tid == ta->nthreads - 1) end = ARRAY_SIZE;
     double scalar = 3.0;
     for (size_t i = start; i < end; i++)
         ta->c[i] = ta->a[i] + scalar * ta->b[i];
@@ -32,7 +38,27 @@ static void *stream_worker(void *arg) {
 static int mem_stream_init(void **state) {
     mem_stream_state_t *s = calloc(1, sizeof(*s));
     if (!s) return -1;
-    s->nthreads = SSB_NUM_CPUS();
+    /* Use physical core count to avoid HT-sibling oversubscription.
+     * On SMT-2 systems this halves the thread count, giving each physical
+     * core full access to L1/L2 and load/store bandwidth. */
+    {
+        int ncpu = SSB_NUM_CPUS();
+        s->nthreads = ncpu;
+        /* Check if SMT is active: if thread_siblings > 1, use physical count */
+        char siblings[64];
+        FILE *sf = fopen("/sys/devices/system/cpu/cpu0/topology/thread_siblings_list", "r");
+        if (sf) {
+            if (fgets(siblings, sizeof(siblings), sf)) {
+                int a, b;
+                if (sscanf(siblings, "%d-%d", &a, &b) == 2) {
+                    int smt_width = b - a + 1;
+                    if (smt_width > 1) s->nthreads = ncpu / smt_width;
+                }
+            }
+            fclose(sf);
+        }
+    }
+    if (s->nthreads < 1) s->nthreads = 1;
     if (s->nthreads < 1) s->nthreads = 1;
     s->a = malloc(ARRAY_SIZE * sizeof(double));
     s->b = malloc(ARRAY_SIZE * sizeof(double));
@@ -67,6 +93,8 @@ static int mem_stream_measure(void *state, measurement_t *result) {
     stream_thread_arg_t *args = malloc(n * sizeof(stream_thread_arg_t));
     size_t chunk = ARRAY_SIZE / n;
     size_t remainder = ARRAY_SIZE % n;
+    /* Last thread gets the remainder elements */
+    (void)remainder;
 
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
