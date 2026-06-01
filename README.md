@@ -1,6 +1,6 @@
 # ServMark
 
-Next-generation OS benchmarking framework. 15 categories, 55 benchmarks, full UnixBench equivalence plus modern extensions.
+Next-generation OS benchmarking framework. 15 categories, 55 benchmarks, UnixBench-inspired coverage plus modern extensions (NUMA, virtualization, container density, crypto, network stack, io_uring).
 
 ## Quick Start
 
