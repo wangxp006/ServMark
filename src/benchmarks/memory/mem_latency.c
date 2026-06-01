@@ -20,7 +20,7 @@ static const size_t _size_levels[] = {
     8 * 1024 * 1024,    /* 8MB   — L3 */
     32 * 1024 * 1024,   /* 32MB  — L3 */
     128 * 1024 * 1024,  /* 128MB — DRAM */
-    256 * 1024 * 1024,  /* 256MB — DRAM */
+    256 * 1024 * 1024,  /* 256MB — DRAM (for CPUs with very large L3: Granite Ridge 480MB/Turin 384MB, may still hit cache. Apple M-series DMP may prefetch pointer chains, reducing measured latency.) */
 };
 #define NUM_LEVELS (sizeof(_size_levels) / sizeof(_size_levels[0]))
 
@@ -89,9 +89,6 @@ static double chase_latency(char *buf, size_t region_size, int stride, int nchas
     for (int i = 0; i < nchases; i++) {
         uintptr_t _next;
         memcpy(&_next, (void*)p, sizeof(_next));
-        /* Mask to keep pointer within region */
-        _next = (_next & ~(region_size - 1)) | ((uintptr_t)buf & (region_size - 1));
-        /* Actually just let the chain work — the shuffle already keeps it in bounds */
         p = (volatile uintptr_t *)_next;
     }
     clock_gettime(CLOCK_MONOTONIC, &t1);
@@ -117,8 +114,19 @@ static int mem_latency_measure(void *state, measurement_t *result) {
     }
 
     memset(result, 0, sizeof(*result));
-    /* Report DRAM latency (largest size = 256MB) as primary metric */
-    double dram_lat = chase_latency(s->buffer, _size_levels[NUM_LEVELS - 1], STRIDE, CHASES);
+    /* Report DRAM latency (largest size) as primary metric.
+     * Note: L1/L2/L3 latencies from the loop above are useful for
+     * multi-level cache characterization; the last element of the
+     * size_levels array gives DRAM latency. The chase_latency() call
+     * within the loop already measured 256MB, so reuse that value. */
+    double dram_lat = lowest_latency;
+    /* For DRAM measurement specifically, re-run on the largest size */
+    for (int level = (int)NUM_LEVELS - 1; level >= 0; level--) {
+        if (_size_levels[level] >= 64 * 1024 * 1024) {
+            dram_lat = chase_latency(s->buffer, _size_levels[level], STRIDE, CHASES);
+            break;
+        }
+    }
     result->primary_metric = dram_lat;
     result->wall_seconds = dram_lat * CHASES / 1e9 * NUM_LEVELS;
     return 0;

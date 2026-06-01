@@ -9,18 +9,13 @@
 
 typedef struct {
     char *src;
-    char *dst;
 } mem_bandwidth_state_t;
 
 static int mem_bandwidth_init(void **state) {
     mem_bandwidth_state_t *s = calloc(1, sizeof(*s));
     if (!s) return -1;
     s->src = malloc(BUF_SIZE);
-    s->dst = malloc(BUF_SIZE);
-    if (!s->src || !s->dst) {
-        free(s->src); free(s->dst); free(s);
-        return -1;
-    }
+    if (!s->src) { free(s); return -1; }
     for (size_t i = 0; i < BUF_SIZE; i++) s->src[i] = rand() & 0xFF;
     *state = s;
     return 0;
@@ -30,10 +25,10 @@ static int mem_bandwidth_warmup(void *state) {
     mem_bandwidth_state_t *s = (mem_bandwidth_state_t *)state;
     uint64_t *src64 = (uint64_t *)s->src;
     size_t count = BUF_SIZE / sizeof(uint64_t);
-    volatile uint64_t sink = 0;
+    uint64_t sink = 0;
     for (size_t i = 0; i < count; i++)
         sink += src64[i];
-    __asm__ __volatile__("" : "+r"(sink));
+    __asm__ __volatile__("" : "+r"(sink) : : "memory");
     return 0;
 }
 
@@ -44,15 +39,16 @@ static int mem_bandwidth_measure(void *state, measurement_t *result) {
 
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
-    /* Sequential read bandwidth using 64-bit access to avoid ALU bottleneck */
+    /* Sequential read bandwidth: non-volatile accumulator in register,
+     * single memory-clobber barrier at end to prevent dead-code elimination. */
     {
         uint64_t *src64 = (uint64_t *)s->src;
         size_t count = BUF_SIZE / sizeof(uint64_t);
-        volatile uint64_t sink64 = 0;
+        uint64_t sink64 = 0;
         for (size_t i = 0; i < count; i++) {
             sink64 += src64[i];
         }
-        __asm__ __volatile__("" : "+r"(sink64));
+        __asm__ __volatile__("" : "+r"(sink64) : : "memory");
     }
 
     clock_gettime(CLOCK_MONOTONIC, &t1);
@@ -67,7 +63,7 @@ static int mem_bandwidth_measure(void *state, measurement_t *result) {
 
 static int mem_bandwidth_cleanup(void *state) {
     mem_bandwidth_state_t *s = (mem_bandwidth_state_t *)state;
-    free(s->src); free(s->dst); free(s);
+    free(s->src); free(s);
     return 0;
 }
 

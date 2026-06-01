@@ -26,7 +26,10 @@ static void *fs_worker(void *arg) {
 }
 
 static int numa_false_sharing_init(void **state) {
-    numa_false_sharing_state_t *s = calloc(1, sizeof(*s));
+    numa_false_sharing_state_t *s = aligned_alloc(64,
+        (sizeof(*s) + 63) / 64 * 64);
+    if (!s) return -1;
+    memset(s, 0, sizeof(*s));
     if (!s) return -1;
     s->counter_a = s->counter_b = 0;
     s->counter_x = s->counter_y = 0;
@@ -46,52 +49,44 @@ static int numa_false_sharing_warmup(void *state) {
 static int numa_false_sharing_measure(void *state, measurement_t *result) {
     numa_false_sharing_state_t *s = (numa_false_sharing_state_t *)state;
     struct timespec t0, t1;
-    int n = s->nthreads;
-    if (n < 2) n = 2;
-    int iters_per_thread = ITERATIONS / n;
-    pthread_t *threads = malloc(n * sizeof(pthread_t));
+    int iters_per_thread = ITERATIONS;
+    pthread_t threads[2];
 
-    /* Phase A: false sharing — two threads write to counter_a and counter_b
-     * which are on the SAME cache line (offset 0 and 8, both within 64 bytes) */
+    /* Phase A: false sharing — 2 threads write to counter_a and counter_b
+     * which are on the SAME cache line (offset 0 and 8, both within 64 bytes).
+     * Using exactly 2 threads isolates false sharing from true contention. */
     s->counter_a = s->counter_b = 0;
 
     clock_gettime(CLOCK_MONOTONIC, &t0);
     pthread_create(&threads[0], NULL, fs_worker, (void *)&s->counter_a);
     pthread_create(&threads[1], NULL, fs_worker, (void *)&s->counter_b);
-    for (int t = 0; t < n; t++)
-        if (t >= 2) pthread_create(&threads[t], NULL, fs_worker, (void *)&s->counter_a);
-    for (int t = 0; t < n; t++)
-        pthread_join(threads[t], NULL);
+    pthread_join(threads[0], NULL);
+    pthread_join(threads[1], NULL);
     clock_gettime(CLOCK_MONOTONIC, &t1);
 
-    double false_sharing_elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
-    double false_sharing_rate = (double)n * iters_per_thread / false_sharing_elapsed;
+    double fs_elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
+    double fs_rate = 2.0 * iters_per_thread / fs_elapsed;
 
     /* Phase B: no false sharing — threads write to counter_x and counter_y
-     * which are on DIFFERENT cache lines (offset 64 and 136 with padding) */
+     * which are on DIFFERENT cache lines (offset 64 and 136 with padding). */
     s->counter_x = s->counter_y = 0;
 
     clock_gettime(CLOCK_MONOTONIC, &t0);
     pthread_create(&threads[0], NULL, fs_worker, (void *)&s->counter_x);
     pthread_create(&threads[1], NULL, fs_worker, (void *)&s->counter_y);
-    for (int t = 2; t < n; t++)
-        pthread_create(&threads[t], NULL, fs_worker, (void *)&s->counter_x);
-    for (int t = 0; t < n; t++)
-        pthread_join(threads[t], NULL);
+    pthread_join(threads[0], NULL);
+    pthread_join(threads[1], NULL);
     clock_gettime(CLOCK_MONOTONIC, &t1);
 
-    double no_sharing_elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
-    double no_sharing_rate = (double)n * iters_per_thread / no_sharing_elapsed;
+    double ns_elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
+    double ns_rate = 2.0 * iters_per_thread / ns_elapsed;
 
-    free(threads);
+    /* Report false sharing penalty: 1.0 = no impact, <1.0 = slowdown */
+    double penalty = (ns_rate > 0) ? fs_rate / ns_rate : 1.0;
 
-    /* Report false sharing penalty: lower is worse (0.0 = severe, 1.0 = no penalty) */
-    double penalty = (no_sharing_rate > 0) ? false_sharing_rate / no_sharing_rate : 1.0;
-
-    double elapsed = false_sharing_elapsed + no_sharing_elapsed;
     memset(result, 0, sizeof(*result));
-    result->primary_metric = penalty;  /* ratio: 1.0 = no false sharing impact */
-    result->wall_seconds = elapsed;
+    result->primary_metric = penalty;
+    result->wall_seconds = fs_elapsed + ns_elapsed;
     return 0;
 }
 
@@ -103,9 +98,9 @@ static int numa_false_sharing_cleanup(void *state) {
 benchmark_t bench_numa_false_sharing = {
     .name = "numa-false-sharing",
     .category = "C5",
-    .description = "False sharing penalty ratio: same-cache-line vs separate-cache-line atomics",
+    .description = "False sharing ratio: same-cache-line vs different-cache-line atomic throughput (2 threads)",
     .tier = 1,
-    .primary_metric_name = "increment/sec",
+    .primary_metric_name = "ratio",
     .higher_is_better = true,
     .min_iterations = SSB_MIN_ITERATIONS,
     .max_iterations = SSB_MAX_ITERATIONS,
