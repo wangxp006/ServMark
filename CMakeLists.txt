@@ -48,17 +48,30 @@ target_link_libraries(ssbcore PUBLIC
     ${ZSTD_LIBRARIES} ${PTHREAD_LIBRARIES} ${MATH_LIBRARIES} dl rt
 )
 
-# Benchmark libraries
-add_library(ssbbench_cpu STATIC
-    src/benchmarks/cpu/int_hash.c src/benchmarks/cpu/int_sort.c
-    src/benchmarks/cpu/int_parse.c src/benchmarks/cpu/int_regex.c
-    src/benchmarks/cpu/fp_gemm.c src/benchmarks/cpu/fp_fft.c
-    src/benchmarks/cpu/fp_conv.c src/benchmarks/cpu/fp_distance.c
-    src/benchmarks/cpu/fp_ray.c src/benchmarks/cpu/crypto_zstd.c
-    src/benchmarks/cpu/crypto_aes.c src/benchmarks/cpu/crypto_hash.c
-    src/benchmarks/cpu/crypto_rsa.c
+# Benchmark libraries — one per directory, mapped to categories:
+#   compute/ (C1+C2): integer + float compute  (9 benchmarks)
+#   crypto/  (C3):    compression + encryption  (4 benchmarks)
+#   memory/  (C4+C5): memory hierarchy + NUMA   (8 benchmarks)
+#   os/      (C6+C8+C9+C12): process, context switch, script, syscall (11)
+#   sync/    (C7):    synchronization + locks   (5 benchmarks)
+#   io/      (C10+C11): file I/O + local IPC    (10 benchmarks)
+#   net/     (C13):   network stack             (5 benchmarks)
+#   virt/    (C14+C15): virtualization + containers (3 benchmarks)
+
+add_library(ssbbench_compute STATIC
+    src/benchmarks/compute/int_hash.c src/benchmarks/compute/int_sort.c
+    src/benchmarks/compute/int_parse.c src/benchmarks/compute/int_regex.c
+    src/benchmarks/compute/fp_gemm.c src/benchmarks/compute/fp_fft.c
+    src/benchmarks/compute/fp_conv.c src/benchmarks/compute/fp_distance.c
+    src/benchmarks/compute/fp_ray.c
 )
-target_link_libraries(ssbbench_cpu ssbcore)
+target_link_libraries(ssbbench_compute ssbcore)
+
+add_library(ssbbench_crypto STATIC
+    src/benchmarks/crypto/crypto_zstd.c src/benchmarks/crypto/crypto_aes.c
+    src/benchmarks/crypto/crypto_hash.c src/benchmarks/crypto/crypto_rsa.c
+)
+target_link_libraries(ssbbench_crypto ssbcore)
 
 add_library(ssbbench_memory STATIC
     src/benchmarks/memory/mem_latency.c src/benchmarks/memory/mem_bandwidth.c
@@ -68,16 +81,23 @@ add_library(ssbbench_memory STATIC
 )
 target_link_libraries(ssbbench_memory ssbcore)
 
-add_library(ssbbench_process STATIC
-    src/benchmarks/process/proc_fork_exec.c src/benchmarks/process/proc_pthread.c
-    src/benchmarks/process/proc_mmap.c src/benchmarks/process/sync_mutex.c
-    src/benchmarks/process/sync_spinlock.c src/benchmarks/process/sync_rwlock.c
-    src/benchmarks/process/sync_semaphore.c src/benchmarks/process/sync_mpmc.c
-    src/benchmarks/process/cswitch_pipe.c src/benchmarks/process/cswitch_futex.c
-    src/benchmarks/process/cswitch_smt.c src/benchmarks/process/script_shell.c
-    src/benchmarks/process/script_python.c
+add_library(ssbbench_os STATIC
+    src/benchmarks/os/proc_fork_exec.c src/benchmarks/os/proc_pthread.c
+    src/benchmarks/os/proc_mmap.c
+    src/benchmarks/os/cswitch_pipe.c src/benchmarks/os/cswitch_futex.c
+    src/benchmarks/os/cswitch_smt.c
+    src/benchmarks/os/script_shell.c src/benchmarks/os/script_python.c
+    src/benchmarks/os/syscall_getpid.c src/benchmarks/os/syscall_vdso.c
+    src/benchmarks/os/syscall_uring.c
 )
-target_link_libraries(ssbbench_process ssbcore)
+target_link_libraries(ssbbench_os ssbcore)
+
+add_library(ssbbench_sync STATIC
+    src/benchmarks/sync/sync_mutex.c src/benchmarks/sync/sync_spinlock.c
+    src/benchmarks/sync/sync_rwlock.c src/benchmarks/sync/sync_semaphore.c
+    src/benchmarks/sync/sync_mpmc.c
+)
+target_link_libraries(ssbbench_sync ssbcore)
 
 add_library(ssbbench_io STATIC
     src/benchmarks/io/fs_copy.c src/benchmarks/io/fs_seq_rw.c
@@ -85,24 +105,29 @@ add_library(ssbbench_io STATIC
     src/benchmarks/io/fs_meta.c src/benchmarks/io/fs_uring.c
     src/benchmarks/io/ipc_pipe.c src/benchmarks/io/ipc_unix.c
     src/benchmarks/io/ipc_eventfd.c src/benchmarks/io/ipc_signal.c
-    src/benchmarks/io/syscall_getpid.c src/benchmarks/io/syscall_vdso.c
-    src/benchmarks/io/syscall_uring.c
 )
 target_link_libraries(ssbbench_io ssbcore)
 
-add_library(ssbbench_net_virt STATIC
-    src/benchmarks/net_virt/net_tcp.c src/benchmarks/net_virt/net_udp.c
-    src/benchmarks/net_virt/net_conn_rate.c src/benchmarks/net_virt/net_latency.c
-    src/benchmarks/net_virt/net_zero_copy.c src/benchmarks/net_virt/vm_detect.c
-    src/benchmarks/net_virt/vm_cpu_overhead.c src/benchmarks/net_virt/ctr_lifecycle.c
+add_library(ssbbench_net STATIC
+    src/benchmarks/net/net_tcp.c src/benchmarks/net/net_udp.c
+    src/benchmarks/net/net_conn_rate.c src/benchmarks/net/net_latency.c
+    src/benchmarks/net/net_zero_copy.c
 )
-target_link_libraries(ssbbench_net_virt ssbcore)
+target_link_libraries(ssbbench_net ssbcore)
+
+add_library(ssbbench_virt STATIC
+    src/benchmarks/virt/vm_detect.c src/benchmarks/virt/vm_cpu_overhead.c
+    src/benchmarks/virt/ctr_lifecycle.c
+)
+target_link_libraries(ssbbench_virt ssbcore)
 
 # Main executable - use whole-archive to keep benchmark constructors
 add_executable(servmark src/main.c)
 target_link_libraries(servmark
     -Wl,--whole-archive
-    ssbbench_cpu ssbbench_memory ssbbench_process ssbbench_io ssbbench_net_virt
+    ssbbench_compute ssbbench_crypto ssbbench_memory
+    ssbbench_os ssbbench_sync ssbbench_io
+    ssbbench_net ssbbench_virt
     -Wl,--no-whole-archive
     ssbcore
 )
