@@ -146,11 +146,57 @@ double scoring_thermal_derating(double sustained, double peak) {
 
 int scoring_load_reference(const char *path, double **baselines,
         char ***names, int *count) {
-    /* Stub: load from frozen reference JSON */
-    (void)path;
-    *baselines = NULL;
-    *names = NULL;
-    *count = 0;
+    /* Load baselines from a simple text file.
+     * Format: one "name = value" per line (same as config format).
+     * Lines starting with # are comments. */
+    if (!path || !baselines || !names || !count) return -1;
+
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+
+    /* First pass: count entries */
+    char line[512];
+    int n = 0;
+    while (fgets(line, sizeof(line), f)) {
+        char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '#' || *p == '\n' || *p == '\0') continue;
+        char *eq = strchr(p, '=');
+        if (eq) n++;
+    }
+    if (n == 0) { fclose(f); return -1; }
+
+    *baselines = calloc(n, sizeof(double));
+    *names = calloc(n, sizeof(char *));
+    if (!*baselines || !*names) {
+        free(*baselines); free(*names);
+        *baselines = NULL; *names = NULL;
+        fclose(f); return -1;
+    }
+    *count = n;
+
+    /* Second pass: parse entries */
+    rewind(f);
+    int idx = 0;
+    while (fgets(line, sizeof(line), f) && idx < n) {
+        char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '#' || *p == '\n' || *p == '\0') continue;
+        char *eq = strchr(p, '=');
+        if (!eq) continue;
+        *eq = '\0';
+        char *name = p;
+        char *value = eq + 1;
+        /* Trim name */
+        while (*name == ' ' || *name == '\t') name++;
+        char *ne = name + strlen(name) - 1;
+        while (ne > name && (*ne == ' ' || *ne == '\t' || *ne == '\n')) { *ne = '\0'; ne--; }
+        /* Parse value */
+        (*baselines)[idx] = atof(value);
+        (*names)[idx] = strdup(name);
+        idx++;
+    }
+    fclose(f);
     return 0;
 }
 
