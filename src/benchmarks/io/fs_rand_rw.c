@@ -36,7 +36,6 @@ static int fs_rand_rw_init(void **state) {
         close(fd);
     }
     /* Precompute random offsets */
-    srand(time(NULL));
     int max_blocks = FILE_SIZE / BLOCK_SIZE;
     for (int i = 0; i < NUM_OPS; i++)
         s->offsets[i] = (rand() % max_blocks) * BLOCK_SIZE;

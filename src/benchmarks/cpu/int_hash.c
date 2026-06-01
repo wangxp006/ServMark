@@ -35,7 +35,6 @@ static int int_hash_init(void **state) {
     }
 
     /* Generate random keys */
-    srand(time(NULL));
     for (int i = 0; i < OPS_PER_ITER; i++) {
         s->keys[i] = ((uint64_t)rand() << 32) | (uint64_t)rand();
         s->values[i] = s->keys[i] ^ 0xDEADBEEFCAFE1234ULL;

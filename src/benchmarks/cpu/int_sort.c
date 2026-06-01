@@ -23,7 +23,6 @@ static int int_sort_init(void **state) {
         free(s->data); free(s->buffer); free(s); return -1;
     }
 
-    srand(time(NULL));
     for (int i = 0; i < N_ELEMENTS; i++) {
         s->data[i] = ((uint64_t)rand() << 32) | (uint64_t)rand();
     }

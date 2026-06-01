@@ -40,7 +40,6 @@ static int mem_stream_init(void **state) {
         free(s->a); free(s->b); free(s->c); free(s);
         return -1;
     }
-    srand(time(NULL));
     for (size_t i = 0; i < ARRAY_SIZE; i++) {
         s->a[i] = (double)rand() / RAND_MAX;
         s->b[i] = (double)rand() / RAND_MAX;

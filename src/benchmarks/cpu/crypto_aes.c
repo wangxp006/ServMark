@@ -29,7 +29,6 @@ static int crypto_aes_init(void **state) {
         free(s->iv); free(s->tag); free(s);
         return -1;
     }
-    srand(time(NULL));
     for (int i = 0; i < CHUNK_SIZE; i++) s->plaintext[i] = rand() & 0xFF;
     for (int i = 0; i < 32; i++) s->key[i] = rand() & 0xFF;
     for (int i = 0; i < 12; i++) s->iv[i] = rand() & 0xFF;

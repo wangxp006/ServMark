@@ -23,7 +23,6 @@ static int mem_random_init(void **state) {
         return -1;
     }
     /* Fill buffer with data */
-    srand(time(NULL));
     for (size_t i = 0; i < s->num_elements; i++)
         s->buffer[i] = (int64_t)i ^ 0xDEADBEEFCAFE1234ULL;
     /* Generate random access pattern */

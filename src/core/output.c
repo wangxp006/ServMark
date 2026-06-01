@@ -7,6 +7,23 @@
 #include <time.h>
 
 void output_generate_uuid(char buf[37]) {
+    /* Read 16 random bytes from /dev/urandom for proper UUID4 entropy */
+    unsigned char r[16];
+    FILE *ur = fopen("/dev/urandom", "rb");
+    if (ur) {
+        size_t n = fread(r, 1, 16, ur);
+        fclose(ur);
+        if (n == 16) {
+            r[6] = (r[6] & 0x0f) | 0x40;  /* UUID version 4 */
+            r[8] = (r[8] & 0x3f) | 0x80;  /* UUID variant 1 */
+            snprintf(buf, 37,
+                    "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+                    r[0],r[1],r[2],r[3],r[4],r[5],r[6],r[7],
+                    r[8],r[9],r[10],r[11],r[12],r[13],r[14],r[15]);
+            return;
+        }
+    }
+    /* Fallback: use rand() only if /dev/urandom unavailable */
     snprintf(buf, 37, "%08x-%04x-%04x-%04x-%04x%08x",
             (unsigned)rand(), (unsigned)rand() & 0xffff,
             ((unsigned)rand() & 0x0fff) | 0x4000,

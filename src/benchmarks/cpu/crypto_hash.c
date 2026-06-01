@@ -17,7 +17,6 @@ static int crypto_hash_init(void **state) {
     if (!s) return -1;
     s->data = malloc(DATA_SIZE);
     if (!s->data) { free(s); return -1; }
-    srand(time(NULL));
     for (int i = 0; i < DATA_SIZE; i++)
         s->data[i] = rand() & 0xFF;
     *state = s;

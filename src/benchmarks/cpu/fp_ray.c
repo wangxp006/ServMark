@@ -54,7 +54,6 @@ static int fp_ray_init(void **state) {
         free(s->rays); free(s->tris); free(s->hits); free(s);
         return -1;
     }
-    srand(time(NULL));
     for (int i = 0; i < NUM_RAYS; i++) {
         s->rays[i].orig = (vec3){0, 0, -5};
         s->rays[i].dir = (vec3){(float)rand()/RAND_MAX - 0.5f,

@@ -21,7 +21,6 @@ static int mem_bandwidth_init(void **state) {
         free(s->src); free(s->dst); free(s);
         return -1;
     }
-    srand(time(NULL));
     for (size_t i = 0; i < BUF_SIZE; i++) s->src[i] = rand() & 0xFF;
     *state = s;
     return 0;

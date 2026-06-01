@@ -20,7 +20,6 @@ static int fp_gemm_init(void **state) {
         free(s->A); free(s->B); free(s->C); free(s);
         return -1;
     }
-    srand(time(NULL));
     for (int i = 0; i < N * N; i++) {
         s->A[i] = (double)rand() / RAND_MAX;
         s->B[i] = (double)rand() / RAND_MAX;

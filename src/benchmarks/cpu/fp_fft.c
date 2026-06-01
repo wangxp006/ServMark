@@ -69,7 +69,6 @@ static int fp_fft_init(void **state) {
         }
     }
     /* Random signal */
-    srand(time(NULL));
     for (int i = 0; i < n; i++) {
         s->real[i] = (double)rand() / RAND_MAX - 0.5;
         s->imag[i] = 0.0;

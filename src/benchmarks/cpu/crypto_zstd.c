@@ -25,7 +25,6 @@ static int crypto_zstd_init(void **state) {
         free(s->original); free(s->compressed); free(s);
         return -1;
     }
-    srand(time(NULL));
     /* Generate text-like data for compression */
     const char *words[] = {"the","quick","brown","fox","jumps","over","lazy","dog",
                            "benchmark","compress","decompress","throughput","test"};

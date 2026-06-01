@@ -23,7 +23,6 @@ static int int_parse_init(void **state) {
         free(s->buffer); free(s->results); free(s);
         return -1;
     }
-    srand(time(NULL));
     char *p = s->buffer;
     for (int i = 0; i < PARSE_ITEMS; i++) {
         int64_t val = ((int64_t)rand() << 32) | rand();

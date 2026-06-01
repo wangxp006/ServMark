@@ -22,7 +22,6 @@ static int fp_conv_init(void **state) {
         free(s->input); free(s->kernel); free(s->output); free(s);
         return -1;
     }
-    srand(time(NULL));
     for (int i = 0; i < H * W; i++)
         s->input[i] = (float)rand() / RAND_MAX;
     for (int i = 0; i < K * K; i++)

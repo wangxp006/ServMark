@@ -22,7 +22,6 @@ static int fp_distance_init(void **state) {
         free(s->vectors); free(s->query); free(s);
         return -1;
     }
-    srand(time(NULL));
     for (int i = 0; i < NUM_VECTORS * VEC_DIM; i++)
         s->vectors[i] = (float)rand() / RAND_MAX;
     for (int i = 0; i < VEC_DIM; i++)

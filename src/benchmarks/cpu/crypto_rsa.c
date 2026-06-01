@@ -38,7 +38,6 @@ static int crypto_rsa_init(void **state) {
         free(s->message); free(s->sig); free(s);
         return -1;
     }
-    srand(time(NULL));
     for (size_t i = 0; i < s->msg_len; i++) s->message[i] = rand() & 0xFF;
     *state = s;
     return 0;

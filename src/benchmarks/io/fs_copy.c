@@ -30,7 +30,6 @@ static int fs_copy_init(void **state) {
     /* Create source file */
     int fd = open(s->src_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) { free(s->src_path); free(s->dst_path); free(s->buffer); free(s); return -1; }
-    srand(time(NULL));
     for (size_t off = 0; off < FILE_SIZE; off += COPY_BUF_SIZE) {
         for (size_t i = 0; i < COPY_BUF_SIZE; i++)
             s->buffer[i] = rand() & 0xFF;

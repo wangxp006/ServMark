@@ -36,7 +36,6 @@ static int int_regex_init(void **state) {
         return -1;
     }
 
-    srand(time(NULL));
     /* Generate synthetic log data */
     const char *levels[] = {"INFO", "WARN", "ERROR", "DEBUG"};
     const char *msgs[] = {"processing request", "connection timeout", "disk full",

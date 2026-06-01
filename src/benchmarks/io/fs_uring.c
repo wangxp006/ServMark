@@ -41,7 +41,6 @@ static int fs_uring_init(void **state) {
         free(tmp);
         close(fd);
     }
-    srand(time(NULL));
     int max_blocks = 64 * 1024 * 1024 / SSB_BLOCK_SIZE;
     for (int i = 0; i < NUM_IOS; i++)
         s->offsets[i] = (rand() % max_blocks) * SSB_BLOCK_SIZE;
