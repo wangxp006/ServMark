@@ -56,24 +56,26 @@ static int cswitch_pipe_measure(void *state, measurement_t *result) {
     s->thread_ready = false;
     s->switch_count = 0;
 
+    /* Pre-create the ping thread before starting the timer */
+    pthread_create(&s->thread, NULL, ping_thread, s);
+
+    /* Wait for thread to be ready, then start timing */
+    while (!s->thread_ready) ;
+
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
-    pthread_create(&s->thread, NULL, ping_thread, s);
-
-    /* Wait for thread ready, then start ponging */
-    while (!s->thread_ready) ;
+    /* Pong: read and write back */
     char c = 'y';
-
     for (int64_t i = 0; i < SWITCHES_PER_ITER / 2; i++) {
         if (read(s->pipe_fd[0], &c, 1) != 1) break;
         if (write(s->pipe_fd[1], &c, 1) != 1) break;
     }
 
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+
     pthread_join(s->thread, NULL);
     s->running = false;
-
-    clock_gettime(CLOCK_MONOTONIC, &t1);
 
     double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
     memset(result, 0, sizeof(*result));

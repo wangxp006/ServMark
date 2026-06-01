@@ -47,28 +47,50 @@ static int numa_false_sharing_measure(void *state, measurement_t *result) {
     numa_false_sharing_state_t *s = (numa_false_sharing_state_t *)state;
     struct timespec t0, t1;
     int n = s->nthreads;
+    if (n < 2) n = 2;
     int iters_per_thread = ITERATIONS / n;
     pthread_t *threads = malloc(n * sizeof(pthread_t));
 
-    /* All threads hammer the same cache line (counter_a) */
-    s->counter_a = 0;
+    /* Phase A: false sharing — two threads write to counter_a and counter_b
+     * which are on the SAME cache line (offset 0 and 8, both within 64 bytes) */
+    s->counter_a = s->counter_b = 0;
 
     clock_gettime(CLOCK_MONOTONIC, &t0);
-
+    pthread_create(&threads[0], NULL, fs_worker, (void *)&s->counter_a);
+    pthread_create(&threads[1], NULL, fs_worker, (void *)&s->counter_b);
     for (int t = 0; t < n; t++)
-        pthread_create(&threads[t], NULL, fs_worker, (void *)&s->counter_a);
+        if (t >= 2) pthread_create(&threads[t], NULL, fs_worker, (void *)&s->counter_a);
     for (int t = 0; t < n; t++)
         pthread_join(threads[t], NULL);
-
     clock_gettime(CLOCK_MONOTONIC, &t1);
 
-    volatile int64_t sink = s->counter_a;
-    __asm__ __volatile__("" : "+r"(sink));
+    double false_sharing_elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
+    double false_sharing_rate = (double)n * iters_per_thread / false_sharing_elapsed;
+
+    /* Phase B: no false sharing — threads write to counter_x and counter_y
+     * which are on DIFFERENT cache lines (offset 64 and 136 with padding) */
+    s->counter_x = s->counter_y = 0;
+
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    pthread_create(&threads[0], NULL, fs_worker, (void *)&s->counter_x);
+    pthread_create(&threads[1], NULL, fs_worker, (void *)&s->counter_y);
+    for (int t = 2; t < n; t++)
+        pthread_create(&threads[t], NULL, fs_worker, (void *)&s->counter_x);
+    for (int t = 0; t < n; t++)
+        pthread_join(threads[t], NULL);
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+
+    double no_sharing_elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
+    double no_sharing_rate = (double)n * iters_per_thread / no_sharing_elapsed;
+
     free(threads);
 
-    double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
+    /* Report false sharing penalty: lower is worse (0.0 = severe, 1.0 = no penalty) */
+    double penalty = (no_sharing_rate > 0) ? false_sharing_rate / no_sharing_rate : 1.0;
+
+    double elapsed = false_sharing_elapsed + no_sharing_elapsed;
     memset(result, 0, sizeof(*result));
-    result->primary_metric = (double)n * iters_per_thread / elapsed;
+    result->primary_metric = penalty;  /* ratio: 1.0 = no false sharing impact */
     result->wall_seconds = elapsed;
     return 0;
 }
@@ -81,7 +103,7 @@ static int numa_false_sharing_cleanup(void *state) {
 benchmark_t bench_numa_false_sharing = {
     .name = "numa-false-sharing",
     .category = "C5",
-    .description = "False sharing degradation (auto-scaled threads, shared cache line)",
+    .description = "False sharing penalty ratio: same-cache-line vs separate-cache-line atomics",
     .tier = 1,
     .primary_metric_name = "increment/sec",
     .higher_is_better = true,
