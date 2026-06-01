@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <stdint.h>
 
 #define BUF_MB 256
 #define BUF_SIZE (BUF_MB * 1024 * 1024)
@@ -28,9 +29,11 @@ static int mem_bandwidth_init(void **state) {
 
 static int mem_bandwidth_warmup(void *state) {
     mem_bandwidth_state_t *s = (mem_bandwidth_state_t *)state;
-    volatile char sink = 0;
-    for (size_t i = 0; i < BUF_SIZE / 10; i++)
-        sink += s->src[i];
+    uint64_t *src64 = (uint64_t *)s->src;
+    size_t count = BUF_SIZE / sizeof(uint64_t);
+    volatile uint64_t sink = 0;
+    for (size_t i = 0; i < count; i++)
+        sink += src64[i];
     __asm__ __volatile__("" : "+r"(sink));
     return 0;
 }
@@ -42,9 +45,15 @@ static int mem_bandwidth_measure(void *state, measurement_t *result) {
 
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
-    /* Sequential read with 64-bit access */
-    for (size_t i = 0; i < BUF_SIZE; i += 8) {
-        sink += s->src[i];
+    /* Sequential read bandwidth using 64-bit access to avoid ALU bottleneck */
+    {
+        uint64_t *src64 = (uint64_t *)s->src;
+        size_t count = BUF_SIZE / sizeof(uint64_t);
+        volatile uint64_t sink64 = 0;
+        for (size_t i = 0; i < count; i++) {
+            sink64 += src64[i];
+        }
+        __asm__ __volatile__("" : "+r"(sink64));
     }
 
     clock_gettime(CLOCK_MONOTONIC, &t1);

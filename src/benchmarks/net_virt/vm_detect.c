@@ -21,7 +21,7 @@ static const char *detect_hypervisor(void) {
     unsigned int eax, ebx, ecx, edx;
     if (__get_cpuid(0x40000000, &eax, &ebx, &ecx, &edx)) {
         uint32_t r[3] = {ebx, ecx, edx};
-        if (r[0]==0x4B4D564B && r[1]==0x564B4D56 && r[2]==0x0000004D) return "KVM";
+        if (r[0]==0x4B4D564B && r[1]==0x564B4D56 && r[2]==0x0000004B) return "KVM";
         if (r[0]==0x61774D56 && r[1]==0x4D566572 && r[2]==0x65726177) return "VMware";
         if (r[0]==0x7263694D && r[1]==0x666F736F && r[2]==0x76482074) return "Hyper-V";
         if (r[0]==0x6E655800 && r[1]==0x4D4D5665 && r[2]==0x65586E00) return "Xen";
