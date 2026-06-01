@@ -1,6 +1,7 @@
 #include "benchmark.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 #include <time.h>
 
 #define MAX_SIZE (64 * 1024 * 1024)  /* 64MB */
@@ -10,7 +11,6 @@
 typedef struct {
     char *buffer;
     size_t size;
-    int64_t **chase_ptrs;
 } mem_latency_state_t;
 
 static void setup_pointer_chase(char *buf, size_t size, int stride) {
@@ -24,10 +24,13 @@ static void setup_pointer_chase(char *buf, size_t size, int stride) {
         size_t j = rand() % (i + 1);
         int tmp = order[i]; order[i] = order[j]; order[j] = tmp;
     }
-    /* Store next pointer at each slot */
-    for (size_t i = 0; i < num_slots - 1; i++)
-        *(int64_t *)(buf + order[i] * stride) = (int64_t)(buf + order[i + 1] * stride);
-    *(int64_t *)(buf + order[num_slots - 1] * stride) = (int64_t)(buf + order[0] * stride);
+    /* Store next pointer at each slot using memcpy to avoid strict aliasing UB */
+    for (size_t i = 0; i < num_slots - 1; i++) {
+        uintptr_t ptr_val = (uintptr_t)(buf + order[i + 1] * stride);
+        memcpy(buf + order[i] * stride, &ptr_val, sizeof(ptr_val));
+    }
+    uintptr_t ptr_val_first = (uintptr_t)(buf + order[0] * stride);
+    memcpy(buf + order[num_slots - 1] * stride, &ptr_val_first, sizeof(ptr_val_first));
     free(order);
 }
 
@@ -46,7 +49,11 @@ static int mem_latency_warmup(void *state) {
     mem_latency_state_t *s = (mem_latency_state_t *)state;
     volatile int64_t *p = (volatile int64_t *)s->buffer;
     for (int i = 0; i < 100000; i++)
-        p = (volatile int64_t *)*p;
+        {
+            uintptr_t _next;
+            memcpy(&_next, (void*)p, sizeof(_next));
+            p = (volatile uintptr_t *)_next;
+        }
     __asm__ __volatile__("" : "+r"(p));
     return 0;
 }
@@ -60,7 +67,11 @@ static int mem_latency_measure(void *state, measurement_t *result) {
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
     for (int i = 0; i < CHASES; i++) {
-        p = (volatile int64_t *)*p;
+        {
+            uintptr_t _next;
+            memcpy(&_next, (void*)p, sizeof(_next));
+            p = (volatile uintptr_t *)_next;
+        }
     }
 
     clock_gettime(CLOCK_MONOTONIC, &t1);

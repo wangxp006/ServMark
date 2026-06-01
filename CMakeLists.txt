@@ -15,6 +15,7 @@ endif()
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(HWLOC REQUIRED hwloc)
+add_definitions(-DSSB_USE_HWLOC)
 pkg_check_modules(NUMA REQUIRED numa)
 pkg_check_modules(LIBCRYPTO REQUIRED libcrypto)
 pkg_check_modules(ZSTD REQUIRED libzstd)

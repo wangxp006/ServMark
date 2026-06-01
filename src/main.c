@@ -75,24 +75,17 @@ static int parse_config(const char *path, run_config_t *cfg, char ***bench_filte
             if (value[0]) cfg->category_filter = strdup(value);
         } else if (strcmp(key, "mitigations_off") == 0) {
             cfg->mitigations_off = (atoi(value) != 0);
-        } else if (strcmp(key, "reportable") == 0) {
-            /* reportable flag — for future use */
-        } else if (strcmp(key, "convergence") == 0) {
-            /* convergence target — for future use */
-        } else if (strcmp(key, "max_runtime") == 0) {
-            /* max runtime — for future use */
-        } else if (strcmp(key, "min_iterations") == 0) {
-            /* min iterations — for future use */
-        } else if (strcmp(key, "max_iterations") == 0) {
-            /* max iterations — for future use */
-        } else if (strcmp(key, "cooldown_sec") == 0) {
-            /* cooldown — for future use */
-        } else if (strcmp(key, "march_native") == 0) {
-            /* march native — for future use */
-        } else if (strcmp(key, "isa_baseline") == 0) {
-            /* isa baseline — for future use */
-        } else if (strcmp(key, "require_validate") == 0) {
-            /* require validate — for future use */
+        } else if (strcmp(key, "reportable") == 0 ||
+                   strcmp(key, "convergence") == 0 ||
+                   strcmp(key, "max_runtime") == 0 ||
+                   strcmp(key, "min_iterations") == 0 ||
+                   strcmp(key, "max_iterations") == 0 ||
+                   strcmp(key, "cooldown_sec") == 0 ||
+                   strcmp(key, "march_native") == 0 ||
+                   strcmp(key, "isa_baseline") == 0 ||
+                   strcmp(key, "require_validate") == 0) {
+            fprintf(stderr, "Warning: %s:%d: key '%s' is not yet implemented, ignoring\n",
+                    path, lineno, key);
         } else if (strcmp(key, "benchmark") == 0) {
             /* Format: benchmark = C1 : name : description
              * Extract the benchmark name (second colon-separated field) */
@@ -147,6 +140,9 @@ int main(int argc, char *argv[]) {
         {0, 0, 0, 0}
     };
 
+    /* Parse config file first — CLI args will override */
+    parse_config(config_path, &config, &bench_filter, &bench_filter_count);
+
     int opt;
     while ((opt = getopt_long(argc, argv, "C:m:vt:c:T:xo:r:nh", long_opts, NULL)) != -1) {
         switch (opt) {
@@ -169,9 +165,6 @@ int main(int argc, char *argv[]) {
         default: print_usage(argv[0]); free(bench_filter); return 1;
         }
     }
-
-    /* Parse config file for defaults */
-    parse_config(config_path, &config, &bench_filter, &bench_filter_count);
 
     /* CLI overrides */
     if (config.num_instances <= 0)
@@ -217,10 +210,11 @@ int main(int argc, char *argv[]) {
         return 0;
     }
 
+    int tier_display = (config.tier_mask != 0) ? __builtin_ctz(config.tier_mask) : 0;
     printf("\n  ServMark %s  |  Mode: %s  |  Tier %d  |  Instances: %d",
             SSB_VERSION,
             config.mode == SSB_MODE_PEAK ? "peak" : "sustained",
-            __builtin_ctz(config.tier_mask),
+            tier_display,
             config.num_instances);
     if (bench_filter_count > 0)
         printf("  |  Benchmarks: %d", bench_filter_count);

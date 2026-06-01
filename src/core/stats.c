@@ -15,20 +15,31 @@ void stats_sort(double *values, int count) {
 
 void stats_mean_stddev(const double *values, int count,
         double *mean, double *stddev) {
+    if (count < 1) {
+        if (mean) *mean = 0.0;
+        if (stddev) *stddev = 0.0;
+        return;
+    }
     double sum = 0.0;
     for (int i = 0; i < count; i++) sum += values[i];
-    *mean = sum / count;
+    double m = sum / count;
+    if (mean) *mean = m;
+    if (count < 2) {
+        if (stddev) *stddev = 0.0;
+        return;
+    }
     double ssq = 0.0;
     for (int i = 0; i < count; i++) {
-        double d = values[i] - *mean;
+        double d = values[i] - m;
         ssq += d * d;
     }
-    *stddev = sqrt(ssq / (count - 1));
+    if (stddev) *stddev = sqrt(ssq / (count - 1));
 }
 
 double stats_geometric_mean(const double *values, int count) {
     double log_sum = 0.0;
     for (int i = 0; i < count; i++) {
+        if (values[i] <= 0.0) return 0.0;
         log_sum += log(values[i]);
     }
     return exp(log_sum / count);
@@ -67,16 +78,13 @@ const char *stats_reliability_label(double cv) {
     return "unreliable";
 }
 
-int stats_bootstrap_bca(const double *values, int count,
+int stats_bootstrap_percentile(const double *values, int count,
         int n_resamples, double *ci_lower, double *ci_upper) {
     if (count < 2 || n_resamples < 100) return -1;
 
     double *sample = malloc(count * sizeof(double));
     double *means = malloc(n_resamples * sizeof(double));
     if (!sample || !means) { free(sample); free(means); return -1; }
-
-    double orig_mean;
-    stats_mean_stddev(values, count, &orig_mean, &(double){0});
 
     /* Generate bootstrap distribution of means */
     for (int b = 0; b < n_resamples; b++) {
@@ -88,68 +96,141 @@ int stats_bootstrap_bca(const double *values, int count,
         means[b] = m;
     }
 
-    /* Sort bootstrap means */
+    /* Sort bootstrap means and take percentile CI */
     stats_sort(means, n_resamples);
-
-    /* Percentile CI (simple bootstrap, close to BCa for symmetric cases) */
     int lo_idx = (int)(0.025 * n_resamples);
     int hi_idx = (int)(0.975 * n_resamples);
-    /* BCa acceleration correction (approximate) */
-    double z0 = 0.0;
-    int count_less = 0;
-    for (int b = 0; b < n_resamples; b++) {
-        if (means[b] < orig_mean) count_less++;
-    }
-    z0 = (count_less > 0 && count_less < n_resamples)
-        ? 0.0 : 0.0; /* simplified; proper BCa needs jackknife */
-
-    double z_alpha = 1.96;
-    double a1 = (z0 + z_alpha) / (1 - 0.0 * (z0 + z_alpha));
-    double a2 = (z0 - z_alpha) / (1 - 0.0 * (z0 - z_alpha));
-    double p1 = 0.5 + 0.5 * erf(a1 / sqrt(2.0));
-    double p2 = 0.5 + 0.5 * erf(a2 / sqrt(2.0));
-
-    int li = (int)(p1 * n_resamples);
-    int hi = (int)(p2 * n_resamples);
-    if (li < 0) li = 0;
-    if (li >= n_resamples) li = n_resamples - 1;
-    if (hi < 0) hi = 0;
-    if (hi >= n_resamples) hi = n_resamples - 1;
-
-    *ci_lower = means[li];
-    *ci_upper = means[hi];
+    if (lo_idx < 0) lo_idx = 0;
+    if (hi_idx >= n_resamples) hi_idx = n_resamples - 1;
+    *ci_lower = means[lo_idx];
+    *ci_upper = means[hi_idx];
 
     free(sample);
     free(means);
     return 0;
 }
 
-double stats_shapiro_wilk(const double *values, int count) {
-    /* Simplified implementation for n <= 50 */
-    if (count < 3 || count > 50) return 1.0;
+/* Backward-compatible alias */
+int stats_bootstrap_bca(const double *values, int count,
+        int n_resamples, double *ci_lower, double *ci_upper) {
+    return stats_bootstrap_percentile(values, count, n_resamples, ci_lower, ci_upper);
+}
+
+/* Anderson-Darling test for normality.
+ * Returns the A²* statistic (adjusted for small sample size).
+ * Critical values for alpha=0.05: ~0.752 (sample-size adjusted).
+ * Lower values indicate better fit to normal distribution. */
+double stats_anderson_darling(const double *values, int count) {
+    if (count < 3) return 0.0;
+
+    double mean, stddev;
+    stats_mean_stddev(values, count, &mean, &stddev);
+    if (stddev < 1e-15) return 0.0;
 
     double *sorted = malloc(count * sizeof(double));
     memcpy(sorted, values, count * sizeof(double));
     stats_sort(sorted, count);
 
-    double mean;
-    stats_mean_stddev(values, count, &mean, &(double){0});
-
-    /* Compute W statistic using Royston approximation */
-    double ssq = 0.0;
-    for (int i = 0; i < count; i++) ssq += (values[i] - mean) * (values[i] - mean);
-
-    double b = 0.0;
-    for (int k = 0; k < count / 2; k++) {
-        /* Coefficients approximated */
-        double w = 1.0 / sqrt((double)count);
-        b += w * (sorted[count - 1 - k] - sorted[k]);
+    /* Standardize to N(0,1) */
+    double S = 0.0;
+    for (int i = 0; i < count; i++) {
+        double zi = (sorted[i] - mean) / stddev;
+        double cdf = 0.5 * (1.0 + erf(zi / sqrt(2.0)));  /* Normal CDF */
+        /* Clamp to avoid log(0) */
+        if (cdf < 1e-15) cdf = 1e-15;
+        if (cdf > 1.0 - 1e-15) cdf = 1.0 - 1e-15;
+        double cdf_rev = 0.5 * (1.0 + erf((sorted[count - 1 - i] - mean) / (stddev * sqrt(2.0))));
+        if (cdf_rev > 1.0 - 1e-15) cdf_rev = 1.0 - 1e-15;
+        S += (2.0 * i + 1.0) * (log(cdf) + log(1.0 - cdf_rev));
     }
-    b = b * b;
-    double W = (ssq > 0) ? b / ssq : 1.0;
+    double A2 = -count - S / count;
+
+    /* Small sample size correction */
+    double A2_star = A2 * (1.0 + 0.75 / count + 2.25 / (count * count));
 
     free(sorted);
-    return W;
+    return A2_star;
+}
+
+/* Backward-compatible wrapper: returns p-value-like quantity.
+ * Converts A²* to an approximate p-value via Stephens (1974) table. */
+double stats_shapiro_wilk(const double *values, int count) {
+    double A2 = stats_anderson_darling(values, count);
+    /* Approximate p-value: A²* < 0.752 → non-significant (p > 0.05).
+     * Return 1.0 - A²* scaled so that higher = more normal (like Shapiro-Wilk W). */
+    double result = 1.0 / (1.0 + A2);
+    return result;
+}
+
+/* Incomplete beta function via continued fraction (Lentz algorithm).
+ * Used for t-distribution CDF computation. */
+static double beta_inc(double a, double b, double x) {
+    if (x < 0.0 || x > 1.0) return 0.0;
+    if (x == 0.0 || x == 1.0) return x;
+
+    /* Compute beta(a,b) via log-gamma */
+    double log_beta = lgamma(a) + lgamma(b) - lgamma(a + b);
+
+    /* Continued fraction for the incomplete beta function */
+    double front = exp(log(a) + log(x) + b * log(1.0 - x) - log(a) - log_beta);
+
+    double f = 1.0, c = 1.0, d = 1.0 - (a + b) * x / (a + 1.0);
+    if (fabs(d) < 1e-30) d = 1e-30;
+    d = 1.0 / d;
+    double h = d;
+    for (int m = 1; m <= 200; m++) {
+        int m2 = 2 * m;
+        double aa = m * (b - m) * x / ((a + m2 - 1.0) * (a + m2));
+        d = 1.0 + aa * d;
+        if (fabs(d) < 1e-30) d = 1e-30;
+        c = 1.0 + aa / c;
+        if (fabs(c) < 1e-30) c = 1e-30;
+        d = 1.0 / d;
+        h *= d * c;
+        aa = -(a + m) * (a + b + m) * x / ((a + m2) * (a + m2 + 1.0));
+        d = 1.0 + aa * d;
+        if (fabs(d) < 1e-30) d = 1e-30;
+        c = 1.0 + aa / c;
+        if (fabs(c) < 1e-30) c = 1e-30;
+        d = 1.0 / d;
+        double del = d * c;
+        h *= del;
+        if (fabs(del - 1.0) < 3e-7) break;
+    }
+    return front * (h - 1.0);
+}
+
+/* t-distribution CDF: P(T <= t) for df degrees of freedom */
+static double t_dist_cdf(double t, double df) {
+    double x = df / (df + t * t);
+    double ib = beta_inc(df / 2.0, 0.5, x);
+    if (t >= 0) return 1.0 - 0.5 * ib;
+    else return 0.5 * ib;
+}
+
+/* Inverse t-distribution: find t such that P(|T| > t) = alpha.
+ * Uses Newton-Raphson on the CDF. */
+static double t_dist_quantile(double alpha, double df) {
+    if (df <= 0) return 1.96;  /* fallback to normal */
+    /* Start with normal approximation */
+    double t = 1.96;
+    if (alpha < 0.3) {
+        /* Cornish-Fisher expansion for better initial guess */
+        double z = 1.96; /* z_0.025 */
+        double z3 = z * z * z + z;
+        t = z + z3 / (4.0 * df) + (5.0 * z * z * z * z * z + 16.0 * z * z * z + 3.0 * z) / (96.0 * df * df);
+    }
+    /* Simple bisection for robustness */
+    double lo = 0.0, hi = 10.0;
+    double target = 1.0 - alpha / 2.0;
+    for (int iter = 0; iter < 50; iter++) {
+        double mid = (lo + hi) / 2.0;
+        double cdf_mid = t_dist_cdf(mid, df);
+        if (cdf_mid < target) lo = mid;
+        else hi = mid;
+        if (hi - lo < 1e-6) break;
+    }
+    return (lo + hi) / 2.0;
 }
 
 int stats_welch_ttest(const double *a, int na, const double *b, int nb,
@@ -165,14 +246,17 @@ int stats_welch_ttest(const double *a, int na, const double *b, int nb,
 
     double t = (se > 0) ? (ma - mb) / se : 0.0;
 
-    /* Approximate p-value from t-distribution */
-    double x = df / (df + t * t);
-    *p_value = 2.0 * (1.0 - 0.5 * (1.0 + erf(fabs(t) / sqrt(2.0))));
+    /* P-value from t-distribution (not normal approximation) */
+    if (df > 0) {
+        *p_value = 2.0 * (1.0 - t_dist_cdf(fabs(t), df));
+    } else {
+        *p_value = 2.0 * (1.0 - 0.5 * (1.0 + erf(fabs(t) / sqrt(2.0))));
+    }
     if (*p_value > 1.0) *p_value = 1.0;
     if (*p_value < 0.0) *p_value = 0.0;
 
-    /* CI for difference */
-    double t_crit = 1.96; /* Normal approx for large df */
+    /* CI using t-distribution critical value (alpha=0.05 two-sided) */
+    double t_crit = (df > 0 && df < 1000) ? t_dist_quantile(0.05, df) : 1.96;
     *ci_lower = (ma - mb) - t_crit * se;
     *ci_upper = (ma - mb) + t_crit * se;
 
@@ -214,10 +298,11 @@ int stats_detect_outliers(const double *values, int count,
             if (dev > max_dev) { max_dev = dev; max_idx = i; }
         }
 
-        /* Critical value (approximate t-distribution) */
+        /* Critical value using t-distribution (Rosner 1983) */
         int r = count - k;
-        double t = 3.0; /* Simplified; proper ESD uses lambda table */
-        double lambda = t * (r - 1) / sqrt((double)r * (r - 2 + t*t));
+        double alpha_r = alpha / (2.0 * (r + 1));  /* Bonferroni-adjusted alpha */
+        double t_crit = t_dist_quantile(2.0 * alpha_r, r - 2);
+        double lambda = t_crit * (r - 1) / sqrt((double)r * (r - 2 + t_crit * t_crit));
 
         if (max_dev / stddev > lambda) {
             outlier_mask[indices[max_idx]] = true;

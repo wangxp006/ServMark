@@ -29,9 +29,11 @@ static int proc_fork_exec_warmup(void *state) {
             execl("/bin/true", "true", NULL);
             _exit(127);
         }
-        int status;
-        waitpid(pid, &status, 0);
-        sink += WEXITSTATUS(status);
+        if (pid > 0) {
+            int status;
+            waitpid(pid, &status, 0);
+            sink += WEXITSTATUS(status);
+        }
     }
     __asm__ __volatile__("" : "+r"(sink));
     return 0;
@@ -50,9 +52,11 @@ static int proc_fork_exec_measure(void *state, measurement_t *result) {
             execl("/bin/true", "true", NULL);
             _exit(127);
         }
-        int status;
-        waitpid(pid, &status, 0);
-        sink += WEXITSTATUS(status);
+        if (pid > 0) {
+            int status;
+            waitpid(pid, &status, 0);
+            sink += WEXITSTATUS(status);
+        }
     }
 
     clock_gettime(CLOCK_MONOTONIC, &t1);

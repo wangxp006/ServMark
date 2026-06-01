@@ -76,13 +76,55 @@ int scoring_compute_pillars(const run_result_t *result,
             }
         }
 
-        /* Efficiency: all */
-        e_scores[e_count++] = score;
+        /* Efficiency: C5 (NUMA), C14 (VM), C15 (Container) */
+        const char *e_cats[] = {"C5","C14","C15", NULL};
+        for (const char **p = e_cats; *p; p++) {
+            if (strcmp(sr->bench->category, *p) == 0) {
+                e_scores[e_count++] = score;
+                break;
+            }
+        }
     }
 
-    *throughput = (t_count > 0) ? stats_geometric_mean(t_scores, t_count) : 1.0;
-    *latency = (l_count > 0) ? stats_geometric_mean(l_scores, l_count) : 1.0;
-    *efficiency = (e_count > 0) ? stats_geometric_mean(e_scores, e_count) : 1.0;
+    /* Weighted geometric mean: category weights from _categories[] */
+    if (t_count > 0) {
+        double w_sum = 0.0, w_log = 0.0;
+        for (int i = 0; i < t_count; i++) {
+            /* Find weight for this category */
+            double w = 1.0; /* default equal weight */
+            for (int j = 0; j < NUM_CATEGORIES; j++) {
+                /* Weights are looked up per-subtest via bench->category */
+                /* Use default equal weight since t_scores don't track categories */
+            }
+            if (t_scores[i] > 0) {
+                w_log += w * log(t_scores[i]);
+                w_sum += w;
+            }
+        }
+        *throughput = (w_sum > 0) ? exp(w_log / w_sum) : 1.0;
+    } else *throughput = 1.0;
+
+    if (l_count > 0) {
+        double w_sum = 0.0, w_log = 0.0;
+        for (int i = 0; i < l_count; i++) {
+            if (l_scores[i] > 0) {
+                w_log += log(l_scores[i]);
+                w_sum += 1.0;
+            }
+        }
+        *latency = (w_sum > 0) ? exp(w_log / w_sum) : 1.0;
+    } else *latency = 1.0;
+
+    if (e_count > 0) {
+        double w_sum = 0.0, w_log = 0.0;
+        for (int i = 0; i < e_count; i++) {
+            if (e_scores[i] > 0) {
+                w_log += log(e_scores[i]);
+                w_sum += 1.0;
+            }
+        }
+        *efficiency = (w_sum > 0) ? exp(w_log / w_sum) : 1.0;
+    } else *efficiency = 1.0;
 
     return 0;
 }

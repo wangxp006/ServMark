@@ -62,10 +62,14 @@ static void lsb_radix_sort(uint64_t *src, uint64_t *dst, int n) {
 static int int_sort_warmup(void *state) {
     int_sort_state_t *s = (int_sort_state_t *)state;
     memcpy(s->buffer, s->data, N_ELEMENTS * sizeof(uint64_t));
-    lsb_radix_sort(s->buffer, malloc(N_ELEMENTS * sizeof(uint64_t)),
-            N_ELEMENTS / 100);
+    uint64_t *tmp = malloc(N_ELEMENTS * sizeof(uint64_t));
+    if (tmp) {
+        lsb_radix_sort(s->buffer, tmp, N_ELEMENTS / 100);
+        free(tmp);
+    }
     return 0;
 }
+
 
 static int int_sort_measure(void *state, measurement_t *result) {
     int_sort_state_t *s = (int_sort_state_t *)state;

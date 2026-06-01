@@ -3,6 +3,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#ifdef SSB_USE_HWLOC
+#include <hwloc.h>
+#endif
 
 int system_read_proc_int(const char *path, int64_t *value) {
     FILE *f = fopen(path, "r");
@@ -81,9 +84,12 @@ int system_probe(system_info_t **info_out) {
     snprintf(node_path, sizeof(node_path), "/sys/devices/system/node/node1");
     if (access(node_path, F_OK) == 0) {
         /* Has multiple nodes - reallocate */
-        info->numa_node_count = 2;
-        info->numa_nodes = realloc(info->numa_nodes,
+        numa_node_t *new_nodes = realloc(info->numa_nodes,
                 2 * sizeof(numa_node_t));
+        if (new_nodes) {
+            info->numa_nodes = new_nodes;
+            info->numa_node_count = 2;
+        } /* else: realloc failed, keep single-node config */
         memset(&info->numa_nodes[1], 0, sizeof(numa_node_t));
         info->numa_nodes[1].id = 1;
         info->numa_nodes[1].memory_kb = info->total_ram_kb / 2;
@@ -93,12 +99,54 @@ int system_probe(system_info_t **info_out) {
         info->numa_nodes[1].distance[1] = 10;
     }
 
-    /* Cache: L1/L2/L3 defaults (hwloc provides accurate values in production) */
-    info->cache_level_count = 3;
-    info->caches = calloc(3, sizeof(cache_info_t));
-    info->caches[0] = (cache_info_t){1, "data", 32, 64, 8};
-    info->caches[1] = (cache_info_t){2, "unified", 1024, 64, 16};
-    info->caches[2] = (cache_info_t){3, "unified", 32768, 64, 16};
+    /* Try hwloc for accurate cache topology; fall back to defaults */
+    info->cache_level_count = 0;
+    info->caches = NULL;
+#ifdef SSB_USE_HWLOC
+    {
+        hwloc_topology_t topo;
+        if (hwloc_topology_init(&topo) == 0 &&
+            hwloc_topology_load(topo) == 0) {
+            int depth = hwloc_topology_get_depth(topo);
+            /* Count caches first */
+            int cache_count = 0;
+            for (int d = 0; d < depth; d++) {
+                if (hwloc_get_depth_type(topo, d) == HWLOC_OBJ_CACHE)
+                    cache_count += hwloc_get_nbobjs_by_depth(topo, d);
+            }
+            if (cache_count > 0) {
+                info->caches = calloc(cache_count, sizeof(cache_info_t));
+                if (info->caches) {
+                    for (int d = 0; d < depth; d++) {
+                        if (hwloc_get_depth_type(topo, d) != HWLOC_OBJ_CACHE) continue;
+                        int n = hwloc_get_nbobjs_by_depth(topo, d);
+                        for (int j = 0; j < n && info->cache_level_count < cache_count; j++) {
+                            hwloc_obj_t obj = hwloc_get_obj_by_depth(topo, d, j);
+                            if (obj) {
+                                cache_info_t *ci = &info->caches[info->cache_level_count++];
+                                ci->level = obj->attr->cache.depth;
+                                ci->type = (obj->attr->cache.type == HWLOC_OBJ_CACHE_DATA) ? "data" :
+                                           (obj->attr->cache.type == HWLOC_OBJ_CACHE_INSTRUCTION) ? "instruction" : "unified";
+                                ci->size_kb = (int)(obj->attr->cache.size / 1024);
+                                ci->line_size = (int)obj->attr->cache.linesize;
+                                ci->ways = obj->attr->cache.associativity;
+                            }
+                        }
+                    }
+                }
+            }
+            hwloc_topology_destroy(topo);
+        }
+    }
+#endif
+    /* Fallback: hard-coded defaults if hwloc unavailable or failed */
+    if (info->cache_level_count == 0) {
+        info->cache_level_count = 3;
+        info->caches = calloc(3, sizeof(cache_info_t));
+        info->caches[0] = (cache_info_t){1, "data", 32, 64, 8};
+        info->caches[1] = (cache_info_t){2, "unified", 1024, 64, 16};
+        info->caches[2] = (cache_info_t){3, "unified", 32768, 64, 16};
+    }
 
     *info_out = info;
     return 0;
@@ -116,7 +164,9 @@ void system_free(system_info_t *info) {
 
 int system_lock_frequency(void) {
     /* Set performance governor on all CPUs */
-    for (int cpu = 0; cpu < 256; cpu++) {
+    int ncpu = (int)sysconf(_SC_NPROCESSORS_CONF);
+    if (ncpu <= 0 || ncpu > 4096) ncpu = 256;
+    for (int cpu = 0; cpu < ncpu; cpu++) {
         char path[256];
         snprintf(path, sizeof(path),
                 "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_governor", cpu);
