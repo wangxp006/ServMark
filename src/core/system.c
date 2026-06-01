@@ -159,37 +159,96 @@ int system_probe(system_info_t **info_out) {
     system_read_proc_str("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor",
             info->governor, sizeof(info->governor));
 
-    /* NUMA nodes */
-    info->numa_node_count = 1;
-    info->numa_nodes = calloc(1, sizeof(numa_node_t));
-    if (info->numa_nodes) {
-        info->numa_nodes[0].id = 0;
-        info->numa_nodes[0].cpu_count = info->cpu_threads_logical;
-        info->numa_nodes[0].memory_kb = info->total_ram_kb;
-        info->numa_nodes[0].distance[0] = 10;
+    /* === NUMA node topology ===
+     * Dynamic probing via sysfs: count nodes and read distance matrix. */
+    info->numa_node_count = 0;
+    info->numa_nodes = NULL;
+    {
+        int max_nodes = 0;
+        for (int ni = 0; ni < 64; ni++) {
+            char npath[128];
+            snprintf(npath, sizeof(npath), "/sys/devices/system/node/node%d", ni);
+            if (access(npath, F_OK) == 0) max_nodes = ni + 1;
+            else break;
+        }
+        if (max_nodes > 0) {
+            info->numa_nodes = calloc(max_nodes, sizeof(numa_node_t));
+            if (info->numa_nodes) {
+                info->numa_node_count = max_nodes;
+                for (int ni = 0; ni < max_nodes; ni++) {
+                    info->numa_nodes[ni].id = ni;
+                    char cpath[256];
+
+                    /* Read cpumap to count CPUs on this node */
+                    snprintf(cpath, sizeof(cpath),
+                            "/sys/devices/system/node/node%d/cpumap", ni);
+                    FILE *cf = fopen(cpath, "r");
+                    if (cf) {
+                        char cmap[256];
+                        if (fgets(cmap, sizeof(cmap), cf)) {
+                            unsigned long long mask = strtoull(cmap, NULL, 16);
+                            int cpu_count = 0;
+                            while (mask) { cpu_count += mask & 1; mask >>= 1; }
+                            info->numa_nodes[ni].cpu_count = cpu_count;
+                        }
+                        fclose(cf);
+                    }
+
+                    /* Read memory info */
+                    snprintf(cpath, sizeof(cpath),
+                            "/sys/devices/system/node/node%d/meminfo", ni);
+                    cf = fopen(cpath, "r");
+                    if (cf) {
+                        char mline[128];
+                        while (fgets(mline, sizeof(mline), cf)) {
+                            if (strncmp(mline, "MemTotal:", 9) == 0) {
+                                char *v = mline + 9;
+                                while (*v == ' ' || *v == '\t') v++;
+                                info->numa_nodes[ni].memory_kb = (int64_t)strtoull(v, NULL, 10);
+                                break;
+                            }
+                        }
+                        fclose(cf);
+                    }
+
+                    /* Read distance matrix */
+                    snprintf(cpath, sizeof(cpath),
+                            "/sys/devices/system/node/node%d/distance", ni);
+                    cf = fopen(cpath, "r");
+                    if (cf) {
+                        char dline[256];
+                        if (fgets(dline, sizeof(dline), cf)) {
+                            char *tok = strtok(dline, " \t\n");
+                            int di = 0;
+                            while (tok && di < 16) {
+                                info->numa_nodes[ni].distance[di] = atoi(tok);
+                                tok = strtok(NULL, " \t\n");
+                                di++;
+                            }
+                        }
+                        fclose(cf);
+                    } else {
+                        for (int dj = 0; dj < max_nodes; dj++)
+                            info->numa_nodes[ni].distance[dj] = (dj == ni) ? 10 : 20;
+                    }
+                }
+            }
+        }
+    }
+    /* Fallback: single node */
+    if (info->numa_node_count == 0) {
+        info->numa_node_count = 1;
+        info->numa_nodes = calloc(1, sizeof(numa_node_t));
+        if (info->numa_nodes) {
+            info->numa_nodes[0].id = 0;
+            info->numa_nodes[0].cpu_count = info->cpu_threads_logical;
+            info->numa_nodes[0].memory_kb = info->total_ram_kb;
+            info->numa_nodes[0].distance[0] = 10;
+        }
     }
 
-    /* Check for multiple NUMA nodes */
-    char node_path[128];
-    snprintf(node_path, sizeof(node_path), "/sys/devices/system/node/node1");
-    if (access(node_path, F_OK) == 0) {
-        /* Has multiple nodes - reallocate */
-        numa_node_t *new_nodes = realloc(info->numa_nodes,
-                2 * sizeof(numa_node_t));
-        if (new_nodes) {
-            info->numa_nodes = new_nodes;
-            info->numa_node_count = 2;
-        } /* else: realloc failed, keep single-node config */
-        memset(&info->numa_nodes[1], 0, sizeof(numa_node_t));
-        info->numa_nodes[1].id = 1;
-        info->numa_nodes[1].memory_kb = info->total_ram_kb / 2;
-        info->numa_nodes[0].memory_kb = info->total_ram_kb / 2;
-        info->numa_nodes[0].distance[1] = 21;
-        info->numa_nodes[1].distance[0] = 21;
-        info->numa_nodes[1].distance[1] = 10;
-    }
-
-    /* Try hwloc for accurate cache topology; fall back to defaults */
+    /* === Cache topology ===
+     * Priority: 1) hwloc  2) sysfs  3) hardcoded fallback */
     info->cache_level_count = 0;
     info->caches = NULL;
 #ifdef SSB_USE_HWLOC
@@ -219,7 +278,7 @@ int system_probe(system_info_t **info_out) {
                                            (obj->attr->cache.type == HWLOC_OBJ_CACHE_INSTRUCTION) ? "instruction" : "unified";
                                 ci->size_kb = (int)(obj->attr->cache.size / 1024);
                                 ci->line_size = (int)obj->attr->cache.linesize;
-                                ci->ways = obj->attr->cache.associativity;
+                                ci->associativity = obj->attr->cache.associativity;
                             }
                         }
                     }
@@ -229,7 +288,53 @@ int system_probe(system_info_t **info_out) {
         }
     }
 #endif
-    /* Fallback: hard-coded defaults if hwloc unavailable or failed */
+    /* Sysfs fallback: read /sys/devices/system/cpu/cpu0/cache/index* */
+    if (info->cache_level_count == 0) {
+        int idx = 0;
+        for (idx = 0; idx < 8; idx++) {
+            char cpath[256];
+            snprintf(cpath, sizeof(cpath),
+                    "/sys/devices/system/cpu/cpu0/cache/index%d/type", idx);
+            if (access(cpath, R_OK) != 0) break;
+        }
+        if (idx > 0) {
+            info->caches = calloc(idx, sizeof(cache_info_t));
+            if (info->caches) {
+                for (int i = 0; i < idx; i++) {
+                    cache_info_t *ci = &info->caches[i];
+                    char cpath[256], val[64];
+                    int64_t num;
+
+                    snprintf(cpath, sizeof(cpath),
+                            "/sys/devices/system/cpu/cpu0/cache/index%d/level", i);
+                    if (system_read_proc_int(cpath, &num) == 0) ci->level = (int)num;
+
+                    snprintf(cpath, sizeof(cpath),
+                            "/sys/devices/system/cpu/cpu0/cache/index%d/type", i);
+                    if (system_read_proc_str(cpath, val, sizeof(val)) == 0) {
+                        if (strstr(val, "Data")) ci->type = "data";
+                        else if (strstr(val, "Instruction")) ci->type = "instruction";
+                        else ci->type = "unified";
+                    }
+
+                    snprintf(cpath, sizeof(cpath),
+                            "/sys/devices/system/cpu/cpu0/cache/index%d/size", i);
+                    if (system_read_proc_int(cpath, &num) == 0) ci->size_kb = (int)(num / 1024);
+
+                    snprintf(cpath, sizeof(cpath),
+                            "/sys/devices/system/cpu/cpu0/cache/index%d/coherency_line_size", i);
+                    if (system_read_proc_int(cpath, &num) == 0) ci->line_size = (int)num;
+
+                    snprintf(cpath, sizeof(cpath),
+                            "/sys/devices/system/cpu/cpu0/cache/index%d/ways_of_associativity", i);
+                    if (system_read_proc_int(cpath, &num) == 0) ci->associativity = (int)num;
+
+                    info->cache_level_count++;
+                }
+            }
+        }
+    }
+    /* Last resort: hard-coded defaults if all probes failed */
     if (info->cache_level_count == 0) {
         info->cache_level_count = 3;
         info->caches = calloc(3, sizeof(cache_info_t));
