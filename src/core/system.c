@@ -43,22 +43,112 @@ int system_probe(system_info_t **info_out) {
     info->cpu_cores_physical = (int)sysconf(_SC_NPROCESSORS_ONLN);
     info->cpu_threads_logical = info->cpu_cores_physical;
 
-    /* Check SMT */
-    int cores = (int)sysconf(_SC_NPROCESSORS_CONF);
-    if (cores > info->cpu_cores_physical) {
-        info->smt_enabled = true;
-        info->smt_siblings_per_core = cores / info->cpu_cores_physical;
-        info->cpu_threads_logical = cores;
+    /* Check SMT via thread_siblings_list (more reliable than core count diff) */
+    info->smt_enabled = false;
+    info->smt_siblings_per_core = 1;
+    {
+        char siblings[64];
+        if (system_read_proc_str("/sys/devices/system/cpu/cpu0/topology/thread_siblings_list",
+                siblings, sizeof(siblings)) == 0) {
+            int count = 0;
+            int a, b;
+            if (sscanf(siblings, "%d-%d", &a, &b) == 2) count = b - a + 1;
+            else {
+                for (char *p = siblings; *p; p++) if (*p == ',') count++;
+                count = count + 1;
+            }
+            if (count > 1) {
+                info->smt_enabled = true;
+                info->smt_siblings_per_core = count;
+                long conf = sysconf(_SC_NPROCESSORS_CONF);
+                info->cpu_threads_logical = (conf > 0) ? (int)conf
+                    : info->cpu_cores_physical * count;
+            }
+        }
     }
 
     /* Memory */
     long pages = sysconf(_SC_PHYS_PAGES);
     long page_size = sysconf(_SC_PAGESIZE);
-    info->total_ram_kb = (size_t)(pages * page_size / 1024);
+    if (pages > 0 && page_size > 0)
+        info->total_ram_kb = (size_t)((unsigned long long)pages * (unsigned long long)page_size / 1024);
+    else
+        info->total_ram_kb = 0;
 
     /* Check huge pages */
     info->hugepages_2m_available = (access("/sys/kernel/mm/hugepages/hugepages-2048kB", F_OK) == 0);
     info->hugepages_1g_available = (access("/sys/kernel/mm/hugepages/hugepages-1048576kB", F_OK) == 0);
+
+    /* CPU model from /proc/cpuinfo */
+    {
+        FILE *f = fopen("/proc/cpuinfo", "r");
+        if (f) {
+            char cline[512];
+            while (fgets(cline, sizeof(cline), f)) {
+                if (strncmp(cline, "model name", 10) == 0) {
+                    char *c = strchr(cline, ':');
+                    if (c) { c++; while (*c == ' ' || *c == '\t') c++;
+                        size_t l = strlen(c); if (l > 0 && c[l-1] == '\n') c[l-1] = '\0';
+                        strncpy(info->cpu_model, c, sizeof(info->cpu_model) - 1); }
+                    break;
+                }
+            }
+            fclose(f);
+        }
+    }
+
+    /* CPU flags/ISA features */
+    {
+        FILE *f = fopen("/proc/cpuinfo", "r");
+        if (f) {
+            char cline[512];
+            while (fgets(cline, sizeof(cline), f)) {
+                if (strncmp(cline, "flags", 5) == 0 || strncmp(cline, "Features", 8) == 0) {
+                    char *c = strchr(cline, ':');
+                    if (c) { c++; while (*c == ' ' || *c == '\t') c++;
+                        size_t l = strlen(c); if (l > 0 && c[l-1] == '\n') c[l-1] = '\0';
+                        strncpy(info->cpu_isa, c, sizeof(info->cpu_isa) - 1); }
+                    break;
+                }
+            }
+            fclose(f);
+        }
+    }
+
+    /* CPU frequencies from sysfs */
+    {
+        int64_t khz = 0;
+        if (system_read_proc_int("/sys/devices/system/cpu/cpu0/cpufreq/base_frequency", &khz) == 0)
+            info->freq_base_mhz = khz / 1000.0;
+        else if (system_read_proc_int("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq", &khz) == 0)
+            info->freq_base_mhz = khz / 1000.0;
+        if (system_read_proc_int("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq", &khz) == 0)
+            info->freq_max_mhz = khz / 1000.0;
+        if (system_read_proc_int("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq", &khz) == 0)
+            info->freq_current_mhz[0] = khz / 1000.0;
+    }
+
+    /* OS distro */
+    {
+        FILE *f = fopen("/etc/os-release", "r");
+        if (f) {
+            char oline[256];
+            while (fgets(oline, sizeof(oline), f)) {
+                if (strncmp(oline, "PRETTY_NAME=", 12) == 0) {
+                    char *v = oline + 12;
+                    size_t vl = strlen(v);
+                    if (vl > 0 && v[vl-1] == '\n') vl--;
+                    if (v[0] == '"') { v++; vl--; }
+                    if (vl > 0 && v[vl-1] == '"') vl--;
+                    size_t cp = vl < sizeof(info->os_distro) ? vl : sizeof(info->os_distro) - 1;
+                    memcpy(info->os_distro, v, cp);
+                    info->os_distro[cp] = '\0';
+                    break;
+                }
+            }
+            fclose(f);
+        }
+    }
 
     /* Compiler info */
     info->compiler_name = "clang-18";
@@ -162,19 +252,54 @@ void system_free(system_info_t *info) {
     free(info);
 }
 
+/* Saved governors for restoration */
+static char _saved_governors[4096][32];
+static int _saved_governor_count = 0;
+
 int system_lock_frequency(void) {
-    /* Set performance governor on all CPUs */
+    /* Save original governors and set performance + fixed frequency on all CPUs */
     int ncpu = (int)sysconf(_SC_NPROCESSORS_CONF);
     if (ncpu <= 0 || ncpu > 4096) ncpu = 256;
+    _saved_governor_count = 0;
     for (int cpu = 0; cpu < ncpu; cpu++) {
         char path[256];
+        /* Save original governor */
         snprintf(path, sizeof(path),
                 "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_governor", cpu);
+        char orig[32] = {0};
+        FILE *rf = fopen(path, "r");
+        if (rf) {
+            if (fgets(orig, sizeof(orig), rf)) {
+                size_t l = strlen(orig);
+                if (l > 0 && orig[l-1] == '\n') orig[l-1] = '\0';
+            }
+            fclose(rf);
+        }
+        if (orig[0]) strncpy(_saved_governors[cpu], orig, 31);
+        /* Set performance governor */
         FILE *f = fopen(path, "w");
         if (f) {
             fprintf(f, "performance\n");
             fclose(f);
         } else break;
+        _saved_governor_count++;
+    }
+    /* Pin to max frequency: set scaling_min_freq = scaling_max_freq */
+    for (int cpu = 0; cpu < ncpu; cpu++) {
+        char max_path[256], min_path[256];
+        snprintf(max_path, sizeof(max_path),
+                "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_max_freq", cpu);
+        FILE *fmax = fopen(max_path, "r");
+        if (fmax) {
+            char max_freq[32];
+            if (fgets(max_freq, sizeof(max_freq), fmax)) {
+                fclose(fmax);
+                snprintf(min_path, sizeof(min_path),
+                        "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_min_freq", cpu);
+                FILE *fmin = fopen(min_path, "w");
+                if (fmin) { fprintf(fmin, "%s", max_freq); fclose(fmin); }
+            } else fclose(fmax);
+        }
     }
     return 0;
 }
@@ -185,6 +310,16 @@ int system_lock_frequency_peak(void) {
 }
 
 int system_restore_frequency(void) {
+    for (int cpu = 0; cpu < _saved_governor_count; cpu++) {
+        if (_saved_governors[cpu][0]) {
+            char path[256];
+            snprintf(path, sizeof(path),
+                    "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_governor", cpu);
+            FILE *f = fopen(path, "w");
+            if (f) { fprintf(f, "%s\n", _saved_governors[cpu]); fclose(f); }
+        }
+    }
+    _saved_governor_count = 0;
     return 0;
 }
 
@@ -235,13 +370,38 @@ int system_detect_virtualization(char *hypervisor, size_t len, int *confidence) 
             *confidence = 2;
             return 0;
         }
-        if (strstr(vendor, "Microsoft")) {
+        if (strstr(vendor, "Microsoft Corporation")) {
             snprintf(hypervisor, len, "hyper-v");
             *confidence = 2;
             return 0;
         }
         if (strstr(vendor, "Xen")) {
             snprintf(hypervisor, len, "xen");
+            *confidence = 2;
+            return 0;
+        }
+        if (strstr(vendor, "Amazon EC2")) {
+            snprintf(hypervisor, len, "aws-nitro");
+            *confidence = 2;
+            return 0;
+        }
+        if (strstr(vendor, "Google")) {
+            snprintf(hypervisor, len, "gce");
+            *confidence = 2;
+            return 0;
+        }
+        if (strstr(vendor, "Oracle")) {
+            snprintf(hypervisor, len, "oci");
+            *confidence = 2;
+            return 0;
+        }
+        if (strstr(vendor, "DigitalOcean")) {
+            snprintf(hypervisor, len, "digitalocean");
+            *confidence = 2;
+            return 0;
+        }
+        if (strstr(vendor, "Alibaba Cloud")) {
+            snprintf(hypervisor, len, "alicloud");
             *confidence = 2;
             return 0;
         }
@@ -252,6 +412,11 @@ int system_detect_virtualization(char *hypervisor, size_t len, int *confidence) 
     if (system_read_proc_str("/sys/class/dmi/id/product_name", product, sizeof(product)) == 0) {
         if (strstr(product, "KVM") || strstr(product, "QEMU")) {
             snprintf(hypervisor, len, "kvm");
+            *confidence = 1;
+            return 0;
+        }
+        if (strstr(product, "HVM domU")) {
+            snprintf(hypervisor, len, "aws-nitro");
             *confidence = 1;
             return 0;
         }
