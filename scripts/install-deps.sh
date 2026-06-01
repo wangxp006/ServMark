@@ -1,10 +1,15 @@
 #!/bin/bash
 # ServMark dependency installer
-# Detects OS family via /etc/os-release ID_LIKE field.
-# RPM family:  CentOS, RHEL, Fedora, Rocky, Alma, Anolis, openEuler, Kylin,
-#              UOS server, Oracle Linux, Scientific Linux, Amazon Linux, etc.
-# DEB family:  Ubuntu, Debian, Deepin, UOS desktop, Linux Mint, etc.
-# SUSE family: openSUSE, SLES
+# Auto-detects the package manager by probing available commands.
+# Supports: apt, dnf, yum, zypper, pacman, apk, and more.
+#
+# Works on any distribution without hardcoded OS lists:
+#   DEB family:  Ubuntu, Debian, Deepin, Mint, UOS, etc.
+#   RPM family:  CentOS, RHEL, Fedora, Rocky, Alma, Anolis,
+#                openEuler, Kylin, Oracle, Amazon Linux, etc.
+#   SUSE family: openSUSE, SLES
+#   Arch family: Arch, Manjaro, EndeavourOS
+#   Alpine:      Alpine Linux (containers)
 
 set -e
 
@@ -14,91 +19,104 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-# Source /etc/os-release for ID, ID_LIKE, VERSION_ID
+# Show what we're running on
 if [ -f /etc/os-release ]; then
     . /etc/os-release
-else
-    echo "Cannot detect OS: /etc/os-release not found"
+    echo "Detected: ${NAME:-unknown} (${ID:-unknown}), like: ${ID_LIKE:-none}"
+fi
+
+# === Package manager probe & package name tables ===
+# Each entry: command=probe_cmd  update_cmd  install_cmd_prefix
+# Package names are mapped per-manager below.
+
+declare -A PKG_MAP_CC PKG_MAP_CMAKE PKG_MAP_PKGCONFIG
+declare -A PKG_MAP_HWLOC PKG_MAP_NUMA PKG_MAP_SSL PKG_MAP_ZSTD
+declare -A PKG_UPDATE PKG_INSTALL
+
+# Map: manager_name => package_name
+register_pkgs() {
+    local mgr="$1" cc="$2" cm="$3" pk="$4" hw="$5" nu="$6" ssl="$7" zs="$8"
+    PKG_MAP_CC[$mgr]="$cc"
+    PKG_MAP_CMAKE[$mgr]="$cm"
+    PKG_MAP_PKGCONFIG[$mgr]="$pk"
+    PKG_MAP_HWLOC[$mgr]="$hw"
+    PKG_MAP_NUMA[$mgr]="$nu"
+    PKG_MAP_SSL[$mgr]="$ssl"
+    PKG_MAP_ZSTD[$mgr]="$zs"
+}
+
+register_pkgs apt     "build-essential"     "cmake" "pkg-config" "libhwloc-dev"  "libnuma-dev"  "libssl-dev"     "libzstd-dev"
+register_pkgs dnf     "gcc gcc-c++ make"    "cmake" "pkgconfig"  "hwloc-devel"    "numactl-devel" "openssl-devel"  "libzstd-devel"
+register_pkgs yum     "gcc gcc-c++ make"    "cmake" "pkgconfig"  "hwloc-devel"    "numactl-devel" "openssl-devel"  "libzstd-devel"
+register_pkgs zypper  "gcc gcc-c++ make"    "cmake" "pkg-config" "hwloc-devel"    "libnuma-devel" "libopenssl-devel" "libzstd-devel"
+register_pkgs pacman  "gcc make"            "cmake" "pkg-config" "hwloc"          "numactl"      "openssl"         "zstd"
+register_pkgs apk     "gcc g++ make"        "cmake" "pkgconfig"  "hwloc-dev"      "numactl-dev"  "openssl-dev"     "zstd-dev"
+
+# Probe order: preferred first
+PROBE_ORDER=("apt-get" "dnf" "yum" "zypper" "pacman" "apk")
+
+detect_pkg_manager() {
+    for probe in "${PROBE_ORDER[@]}"; do
+        if command -v "$probe" &>/dev/null; then
+            echo "$probe"
+            return
+        fi
+    done
+    echo ""
+}
+
+PKG_BIN=$(detect_pkg_manager)
+if [ -z "$PKG_BIN" ]; then
+    echo "ERROR: No supported package manager found."
+    echo "Probed: ${PROBE_ORDER[*]}"
+    echo ""
+    echo "Please install these packages manually:"
+    echo "  gcc, make, cmake, pkg-config, hwloc-devel, numactl-devel,"
+    echo "  openssl-devel (libcrypto), libzstd-devel"
     exit 1
 fi
 
-echo "Detected: $NAME ($ID), like: ${ID_LIKE:-none}"
+# Map binary name to our internal key
+case "$PKG_BIN" in
+    apt-get)  MGR="apt" ;;
+    dnf)      MGR="dnf" ;;
+    yum)      MGR="yum" ;;
+    zypper)   MGR="zypper" ;;
+    pacman)   MGR="pacman" ;;
+    apk)      MGR="apk" ;;
+    *)        echo "Unknown package manager: $PKG_BIN"; exit 1 ;;
+esac
 
-# Determine package family from ID_LIKE (most reliable for derivatives)
-# Fall back to ID if ID_LIKE is empty
-FAMILY=""
-if echo "$ID_LIKE $ID" | grep -qE 'fedora|rhel|centos'; then
-    FAMILY="rpm"
-elif echo "$ID_LIKE $ID" | grep -qE 'debian|ubuntu'; then
-    FAMILY="deb"
-elif echo "$ID_LIKE $ID" | grep -qE 'suse'; then
-    FAMILY="suse"
-fi
+echo "Using package manager: $PKG_BIN ($MGR)"
 
-case "$FAMILY" in
-    deb)
-        echo "Installing dependencies via apt..."
+# === Install ===
+case "$MGR" in
+    apt)
         apt-get update
-        apt-get install -y \
-            build-essential \
-            cmake \
-            pkg-config \
-            libhwloc-dev \
-            libnuma-dev \
-            libssl-dev \
-            libzstd-dev
+        apt-get install -y ${PKG_MAP_CC[$MGR]} ${PKG_MAP_CMAKE[$MGR]} \
+            ${PKG_MAP_PKGCONFIG[$MGR]} ${PKG_MAP_HWLOC[$MGR]} \
+            ${PKG_MAP_NUMA[$MGR]} ${PKG_MAP_SSL[$MGR]} ${PKG_MAP_ZSTD[$MGR]}
         ;;
-
-    rpm)
-        echo "Installing dependencies via dnf/yum..."
-        if command -v dnf &>/dev/null; then
-            PKG_MGR="dnf"
-        elif command -v yum &>/dev/null; then
-            PKG_MGR="yum"
-        else
-            echo "Neither dnf nor yum found. Please install packages manually."
-            exit 1
-        fi
-        $PKG_MGR install -y \
-            gcc \
-            gcc-c++ \
-            make \
-            cmake \
-            pkgconfig \
-            hwloc-devel \
-            numactl-devel \
-            openssl-devel \
-            libzstd-devel
+    dnf|yum)
+        $PKG_BIN install -y ${PKG_MAP_CC[$MGR]} ${PKG_MAP_CMAKE[$MGR]} \
+            ${PKG_MAP_PKGCONFIG[$MGR]} ${PKG_MAP_HWLOC[$MGR]} \
+            ${PKG_MAP_NUMA[$MGR]} ${PKG_MAP_SSL[$MGR]} ${PKG_MAP_ZSTD[$MGR]}
         ;;
-
-    suse)
-        echo "Installing dependencies via zypper..."
-        zypper --non-interactive install \
-            gcc \
-            gcc-c++ \
-            make \
-            cmake \
-            pkg-config \
-            hwloc-devel \
-            libnuma-devel \
-            libopenssl-devel \
-            libzstd-devel
+    zypper)
+        zypper --non-interactive install ${PKG_MAP_CC[$MGR]} ${PKG_MAP_CMAKE[$MGR]} \
+            ${PKG_MAP_PKGCONFIG[$MGR]} ${PKG_MAP_HWLOC[$MGR]} \
+            ${PKG_MAP_NUMA[$MGR]} ${PKG_MAP_SSL[$MGR]} ${PKG_MAP_ZSTD[$MGR]}
         ;;
-
-    *)
-        echo "Could not determine package family from ID='$ID' ID_LIKE='$ID_LIKE'"
-        echo ""
-        echo "Please install these packages manually and re-run:"
-        echo ""
-        echo "  DEB (Ubuntu/Debian/Deepin/Mint):"
-        echo "    apt install build-essential cmake pkg-config libhwloc-dev libnuma-dev libssl-dev libzstd-dev"
-        echo ""
-        echo "  RPM (CentOS/RHEL/Fedora/Rocky/Alma/Anolis/openEuler/Kylin):"
-        echo "    dnf install gcc gcc-c++ make cmake pkgconfig hwloc-devel numactl-devel openssl-devel libzstd-devel"
-        echo ""
-        echo "  SUSE (openSUSE/SLES):"
-        echo "    zypper install gcc gcc-c++ make cmake pkg-config hwloc-devel libnuma-devel libopenssl-devel libzstd-devel"
-        exit 1
+    pacman)
+        pacman -Syu --noconfirm ${PKG_MAP_CC[$MGR]} ${PKG_MAP_CMAKE[$MGR]} \
+            ${PKG_MAP_PKGCONFIG[$MGR]} ${PKG_MAP_HWLOC[$MGR]} \
+            ${PKG_MAP_NUMA[$MGR]} ${PKG_MAP_SSL[$MGR]} ${PKG_MAP_ZSTD[$MGR]}
+        ;;
+    apk)
+        apk update
+        apk add ${PKG_MAP_CC[$MGR]} ${PKG_MAP_CMAKE[$MGR]} \
+            ${PKG_MAP_PKGCONFIG[$MGR]} ${PKG_MAP_HWLOC[$MGR]} \
+            ${PKG_MAP_NUMA[$MGR]} ${PKG_MAP_SSL[$MGR]} ${PKG_MAP_ZSTD[$MGR]}
         ;;
 esac
 
