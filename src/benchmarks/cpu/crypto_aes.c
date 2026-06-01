@@ -56,18 +56,19 @@ static int crypto_aes_measure(void *state, measurement_t *result) {
 
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
+    /* Create CTX once, reuse for all chunks (amortizes key setup cost) */
+    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+    EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL);
     for (int n = 0; n < NUM_CHUNKS; n++) {
-        EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
         int len, ct_len;
-        EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL);
         EVP_EncryptInit_ex(ctx, NULL, NULL, s->key, s->iv);
         EVP_EncryptUpdate(ctx, s->ciphertext, &len, s->plaintext, CHUNK_SIZE);
         EVP_EncryptFinal_ex(ctx, s->ciphertext + len, &ct_len);
         EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, 16, s->tag);
-        EVP_CIPHER_CTX_free(ctx);
         sink += s->tag[0];
         total_bytes += CHUNK_SIZE;
     }
+    EVP_CIPHER_CTX_free(ctx);
 
     clock_gettime(CLOCK_MONOTONIC, &t1);
     __asm__ __volatile__("" : "+r"(sink));

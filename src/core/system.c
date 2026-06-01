@@ -349,7 +349,9 @@ int system_noise_delta(const noise_snapshot_t *before,
         const noise_snapshot_t *after, noise_snapshot_t *delta) {
     delta->interrupts_total = after->interrupts_total - before->interrupts_total;
     delta->context_switches = after->context_switches - before->context_switches;
-    for (int i = 0; i < 16 && i < before->temperature_count; i++) {
+    int tc = before->temperature_count;
+    if (after->temperature_count < tc) tc = after->temperature_count;
+    for (int i = 0; i < 16 && i < tc; i++) {
         delta->temperature_c[i] = after->temperature_c[i] - before->temperature_c[i];
     }
     delta->temperature_count = before->temperature_count;

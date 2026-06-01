@@ -3,6 +3,7 @@
 #include <string.h>
 #include <time.h>
 #include <pthread.h>
+#include <sched.h>
 #include <unistd.h>
 
 #define ARRAY_SIZE (16 * 1024 * 1024)
@@ -65,12 +66,18 @@ static int mem_stream_measure(void *state, measurement_t *result) {
     pthread_t *threads = malloc(n * sizeof(pthread_t));
     stream_thread_arg_t *args = malloc(n * sizeof(stream_thread_arg_t));
     size_t chunk = ARRAY_SIZE / n;
+    size_t remainder = ARRAY_SIZE % n;
 
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
     for (int t = 0; t < n; t++) {
         args[t] = (stream_thread_arg_t){s->a, s->b, s->c, t, n, chunk};
         pthread_create(&threads[t], NULL, stream_worker, &args[t]);
+        /* Pin thread to physical core (NUMA-aware would use hwloc) */
+        cpu_set_t cpuset;
+        CPU_ZERO(&cpuset);
+        CPU_SET(t, &cpuset);
+        pthread_setaffinity_np(threads[t], sizeof(cpu_set_t), &cpuset);
     }
     for (int t = 0; t < n; t++)
         pthread_join(threads[t], NULL);

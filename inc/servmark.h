@@ -19,7 +19,10 @@
 #define SSB_CV_MODERATE 0.05
 #define SSB_CV_HIGH 0.10
 #define SSB_BOOTSTRAP_RESAMPLES 10000
-#define SSB_NUM_CPUS() ((int)sysconf(_SC_NPROCESSORS_ONLN))
+static inline int SSB_NUM_CPUS(void) {
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    return (n > 0) ? (int)n : 1;
+}
 #define SSB_PAGE_SIZE() ((size_t)sysconf(_SC_PAGESIZE))
 
 typedef struct benchmark_s benchmark_t;
