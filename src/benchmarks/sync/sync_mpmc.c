@@ -9,6 +9,14 @@
 #define QUEUE_SIZE 1024
 #define OPS_PER_PRODUCER 300000
 
+/*
+ * Lock-free MPMC queue using C11 atomics.
+ *
+ * Uses acquire/release ordering for realistic performance on weakly-ordered
+ * architectures (ARM64, RISC-V). Seq_cst would penalize RISC-V (~10-15ns
+ * fence per op) unnecessarily for single-producer/single-consumer patterns.
+ */
+
 typedef struct {
     _Atomic uint64_t items[QUEUE_SIZE];
     _Atomic int head;
@@ -17,50 +25,50 @@ typedef struct {
 
 typedef struct {
     mpmc_queue_t queue;
-    volatile int ready;
-    volatile int64_t produced;
-    volatile int64_t consumed;
+    _Atomic int ready;
+    _Atomic int64_t produced;
+    _Atomic int64_t consumed;
     int nproducers, nconsumers;
 } sync_mpmc_state_t;
 
 static int mpmc_enqueue(mpmc_queue_t *q, uint64_t item) {
-    int t = atomic_load(&q->tail);
+    int t = atomic_load_explicit(&q->tail, memory_order_relaxed);
     int nxt = (t + 1) % QUEUE_SIZE;
-    if (nxt == atomic_load(&q->head)) return 0;
-    atomic_store(&q->items[t], item);
-    atomic_store(&q->tail, nxt);
+    if (nxt == atomic_load_explicit(&q->head, memory_order_acquire)) return 0;
+    atomic_store_explicit(&q->items[t], item, memory_order_relaxed);
+    atomic_store_explicit(&q->tail, nxt, memory_order_release);
     return 1;
 }
 
 static uint64_t mpmc_dequeue(mpmc_queue_t *q) {
-    int h = atomic_load(&q->head);
-    if (h == atomic_load(&q->tail)) return 0;
-    uint64_t item = atomic_load(&q->items[h]);
-    atomic_store(&q->head, (h + 1) % QUEUE_SIZE);
+    int h = atomic_load_explicit(&q->head, memory_order_relaxed);
+    if (h == atomic_load_explicit(&q->tail, memory_order_acquire)) return 0;
+    uint64_t item = atomic_load_explicit(&q->items[h], memory_order_relaxed);
+    atomic_store_explicit(&q->head, (h + 1) % QUEUE_SIZE, memory_order_release);
     return item;
 }
 
 static void *mpmc_producer(void *arg) {
     sync_mpmc_state_t *s = (sync_mpmc_state_t *)arg;
-    while (!s->ready) ;
+    while (!atomic_load_explicit(&s->ready, memory_order_acquire)) ;
     for (int i = 0; i < OPS_PER_PRODUCER; i++) {
         while (!mpmc_enqueue(&s->queue, (uint64_t)i)) ;
-        atomic_fetch_add(&s->produced, 1);
+        atomic_fetch_add_explicit(&s->produced, 1, memory_order_relaxed);
     }
     return NULL;
 }
 
 static void *mpmc_consumer(void *arg) {
     sync_mpmc_state_t *s = (sync_mpmc_state_t *)arg;
-    while (!s->ready) ;
+    while (!atomic_load_explicit(&s->ready, memory_order_acquire)) ;
     int64_t local = 0;
     int64_t target = (int64_t)s->nproducers * OPS_PER_PRODUCER;
-    while (atomic_load(&s->produced) < target) {
+    while (atomic_load_explicit(&s->produced, memory_order_acquire) < target) {
         if (mpmc_dequeue(&s->queue) != 0) local++;
     }
     uint64_t v;
     while ((v = mpmc_dequeue(&s->queue)) != 0) local++;
-    atomic_fetch_add(&s->consumed, local);
+    atomic_fetch_add_explicit(&s->consumed, local, memory_order_relaxed);
     return NULL;
 }
 
@@ -91,7 +99,7 @@ static int sync_mpmc_measure(void *state, measurement_t *result) {
     struct timespec t0, t1;
     int np = s->nproducers, nc = s->nconsumers;
 
-    s->ready = 0; s->produced = 0; s->consumed = 0;
+    atomic_store(&s->ready, 0); atomic_store(&s->produced, 0); atomic_store(&s->consumed, 0);
     pthread_t *threads = malloc((np + nc) * sizeof(pthread_t));
 
     for (int t = 0; t < nc; t++)
@@ -100,7 +108,7 @@ static int sync_mpmc_measure(void *state, measurement_t *result) {
         pthread_create(&threads[nc + t], NULL, mpmc_producer, s);
 
     clock_gettime(CLOCK_MONOTONIC, &t0);
-    s->ready = 1;
+    atomic_store_explicit(&s->ready, 1, memory_order_release);
 
     for (int t = 0; t < np + nc; t++)
         pthread_join(threads[t], NULL);
@@ -110,7 +118,7 @@ static int sync_mpmc_measure(void *state, measurement_t *result) {
 
     double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
     memset(result, 0, sizeof(*result));
-    result->primary_metric = (double)s->consumed / elapsed;
+    result->primary_metric = (double)atomic_load(&s->consumed) / elapsed;
     result->wall_seconds = elapsed;
     return 0;
 }
@@ -123,7 +131,7 @@ static int sync_mpmc_cleanup(void *state) {
 benchmark_t bench_sync_mpmc = {
     .name = "sync-mpmc",
     .category = "C7",
-    .description = "Lock-free MPMC queue C11 atomics (auto-scaled P+C threads)",
+    .description = "Lock-free MPMC queue (C11 atomics acquire/release, auto-scaled P+C threads)",
     .tier = 1,
     .primary_metric_name = "ops/sec",
     .higher_is_better = true,

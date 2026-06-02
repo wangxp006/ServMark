@@ -3,12 +3,21 @@
 #include <string.h>
 #include <time.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <unistd.h>
 
 #define NUM_SIGNALS 200000
 
+/*
+ * kill() signal delivery throughput benchmark.
+ *
+ * kill() is a standard POSIX syscall on all architectures. The syscall
+ * entry/exit mechanism differs by ISA (x86: SYSCALL/SYSRET, ARM64: svc#0,
+ * RISC-V: ecall), which is an inherent architectural difference.
+ */
+
 typedef struct {
-    volatile int caught;
+    _Atomic int caught;
     pid_t target_pid;
 } ipc_signal_state_t;
 
@@ -24,7 +33,7 @@ static int ipc_signal_init(void **state) {
     sigemptyset(&sa.sa_mask);
     sigaction(SIGUSR1, &sa, NULL);
     s->target_pid = getpid();
-    s->caught = 0;
+    atomic_init(&s->caught, 0);
     *state = s;
     return 0;
 }
@@ -58,7 +67,6 @@ static int ipc_signal_measure(void *state, measurement_t *result) {
 }
 
 static int ipc_signal_cleanup(void *state) {
-    /* Restore default handler */
     struct sigaction sa = {0};
     sa.sa_handler = SIG_DFL;
     sigaction(SIGUSR1, &sa, NULL);
@@ -69,7 +77,7 @@ static int ipc_signal_cleanup(void *state) {
 benchmark_t bench_ipc_signal = {
     .name = "ipc-signal",
     .category = "C11",
-    .description = "kill() signal delivery throughput (SIGUSR1)",
+    .description = "kill() signal delivery throughput (SIGUSR1, arch-neutral syscall cost)",
     .tier = 1,
     .primary_metric_name = "signals/sec",
     .higher_is_better = true,

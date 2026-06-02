@@ -3,15 +3,16 @@
 #include <string.h>
 #include <time.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <unistd.h>
 
 #define OPS_PER_THREAD 200000
 
 typedef struct {
     pthread_mutex_t mutex;
-    volatile int64_t counter;
+    _Atomic int64_t counter;
     int nthreads;
-    volatile int ready;
+    _Atomic int ready;
 } sync_mutex_state_t;
 
 typedef struct {
@@ -21,10 +22,10 @@ typedef struct {
 static void *mutex_worker(void *arg) {
     mutex_thread_arg_t *a = (mutex_thread_arg_t *)arg;
     sync_mutex_state_t *s = a->s;
-    while (!s->ready) ;
+    while (!atomic_load_explicit(&s->ready, memory_order_acquire)) ;
     for (int i = 0; i < OPS_PER_THREAD; i++) {
         pthread_mutex_lock(&s->mutex);
-        s->counter++;
+        atomic_fetch_add_explicit(&s->counter, 1, memory_order_relaxed);
         pthread_mutex_unlock(&s->mutex);
     }
     return NULL;
@@ -34,7 +35,7 @@ static int sync_mutex_init(void **state) {
     sync_mutex_state_t *s = calloc(1, sizeof(*s));
     if (!s) return -1;
     pthread_mutex_init(&s->mutex, NULL);
-    s->counter = 0;
+    atomic_init(&s->counter, 0);
     s->nthreads = SSB_NUM_CPUS();
     if (s->nthreads < 2) s->nthreads = 2;
     *state = s;
@@ -45,7 +46,7 @@ static int sync_mutex_warmup(void *state) {
     sync_mutex_state_t *s = (sync_mutex_state_t *)state;
     for (int i = 0; i < 10000; i++) {
         pthread_mutex_lock(&s->mutex);
-        s->counter++;
+        atomic_fetch_add(&s->counter, 1);
         pthread_mutex_unlock(&s->mutex);
     }
     return 0;
@@ -56,8 +57,8 @@ static int sync_mutex_measure(void *state, measurement_t *result) {
     struct timespec t0, t1;
     int n = s->nthreads;
 
-    s->counter = 0;
-    s->ready = 0;
+    atomic_store(&s->counter, 0);
+    atomic_store(&s->ready, 0);
 
     pthread_t *threads = malloc(n * sizeof(pthread_t));
     mutex_thread_arg_t *args = malloc(n * sizeof(mutex_thread_arg_t));
@@ -67,7 +68,7 @@ static int sync_mutex_measure(void *state, measurement_t *result) {
     }
 
     clock_gettime(CLOCK_MONOTONIC, &t0);
-    s->ready = 1;
+    atomic_store_explicit(&s->ready, 1, memory_order_release);
 
     for (int t = 0; t < n; t++)
         pthread_join(threads[t], NULL);
@@ -77,7 +78,7 @@ static int sync_mutex_measure(void *state, measurement_t *result) {
 
     double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
     memset(result, 0, sizeof(*result));
-    result->primary_metric = (double)s->counter / elapsed;
+    result->primary_metric = (double)atomic_load(&s->counter) / elapsed;
     result->wall_seconds = elapsed;
     return 0;
 }

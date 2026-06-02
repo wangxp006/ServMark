@@ -7,16 +7,35 @@
 
 #define DETECT_ITERS 1000000
 
-/* Architecture-neutral. x86 uses CPUID, others use DMI sysfs + fallback. */
+/*
+ * VM detection + virtualization overhead benchmark (ARCH-NEUTRAL).
+ *
+ * Measures vDSO clock_gettime(CLOCK_MONOTONIC) latency on ALL architectures.
+ * vDSO is a pure userspace call on modern kernels for every ISA:
+ *   x86:   rdtsc + vvar arithmetic
+ *   ARM64: mrs CNTVCT_EL0 + vvar arithmetic
+ *   RISC-V: rdtime CSR + vvar arithmetic
+ *
+ * Hypervisor detection uses DMI sysfs first (portable), CPUID fallback (x86).
+ */
+
 #if defined(__x86_64__) || defined(__i386__)
 #include <cpuid.h>
 #endif
 
-typedef struct {
-    int dummy;
-} vm_detect_state_t;
+typedef struct { int dummy; } vm_detect_state_t;
 
 static const char *detect_hypervisor(void) {
+    FILE *f = fopen("/sys/class/dmi/id/product_name", "r");
+    if (f) {
+        char buf[256] = {0};
+        if (fgets(buf, sizeof(buf), f)) {
+            fclose(f);
+            if (strstr(buf, "KVM") || strstr(buf, "kvm")) return "KVM";
+            if (strstr(buf, "VMware")) return "VMware";
+            if (strstr(buf, "VirtualBox")) return "VirtualBox";
+        } else fclose(f);
+    }
 #if defined(__x86_64__) || defined(__i386__)
     unsigned int eax, ebx, ecx, edx;
     if (__get_cpuid(0x40000000, &eax, &ebx, &ecx, &edx)) {
@@ -28,24 +47,13 @@ static const char *detect_hypervisor(void) {
         return "unknown-hv";
     }
 #endif
-    FILE *f = fopen("/sys/class/dmi/id/product_name", "r");
-    if (f) {
-        char buf[256] = {0};
-        if (fgets(buf, sizeof(buf), f)) {
-            fclose(f);
-            if (strstr(buf, "KVM") || strstr(buf, "kvm")) return "KVM";
-            if (strstr(buf, "VMware")) return "VMware";
-            if (strstr(buf, "VirtualBox")) return "VirtualBox";
-        } else fclose(f);
-    }
     return "bare-metal";
 }
 
 static int vm_detect_init(void **state) {
     vm_detect_state_t *s = calloc(1, sizeof(*s));
     if (!s) return -1;
-    *state = s;
-    return 0;
+    *state = s; return 0;
 }
 
 static int vm_detect_warmup(void *state) {
@@ -57,55 +65,34 @@ static int vm_detect_warmup(void *state) {
 
 static int vm_detect_measure(void *state, measurement_t *result) {
     (void)state;
-    struct timespec t0, t1;
-    volatile int sink = 0;
-
+    struct timespec t0, t1, ts;
+    volatile int64_t sink = 0;
     clock_gettime(CLOCK_MONOTONIC, &t0);
-
-#if defined(__x86_64__) || defined(__i386__)
     for (int i = 0; i < DETECT_ITERS; i++) {
-        unsigned int eax, ebx, ecx, edx;
-        __get_cpuid(0x40000000, &eax, &ebx, &ecx, &edx);
-        sink += eax;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        sink += ts.tv_nsec;
     }
-#else
-    /* ARM64/RISC-V: measure getpid() as portable VM-tax indicator */
-    for (int i = 0; i < DETECT_ITERS; i++)
-        sink += getpid();
-#endif
-
     clock_gettime(CLOCK_MONOTONIC, &t1);
     __asm__ __volatile__("" : "+r"(sink));
-
-    double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
+    double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec)/1e9;
     memset(result, 0, sizeof(*result));
     result->primary_metric = elapsed * 1e9 / DETECT_ITERS;
     result->wall_seconds = elapsed;
     return 0;
 }
 
-static int vm_detect_cleanup(void *state) {
-    free(state);
-    return 0;
-}
+static int vm_detect_cleanup(void *state) { free(state); return 0; }
 
 benchmark_t bench_vm_detect = {
-    .name = "vm-detect",
-    .category = "C14",
-    .description = "VM detection + hypervisor leaf call cost (arch-neutral)",
-    .tier = 1,
-    .primary_metric_name = "ns/call",
-    .higher_is_better = false,
-    .min_iterations = SSB_MIN_ITERATIONS,
-    .max_iterations = SSB_MAX_ITERATIONS,
+    .name = "vm-detect", .category = "C14",
+    .description = "VM detection + vDSO clock_gettime cost (arch-neutral, ns/call)",
+    .tier = 1, .primary_metric_name = "ns/call", .higher_is_better = false,
+    .min_iterations = SSB_MIN_ITERATIONS, .max_iterations = SSB_MAX_ITERATIONS,
     .convergence_target = SSB_CONVERGENCE_TARGET,
-    .min_runtime_sec = SSB_MIN_RUNTIME_SEC,
-    .max_runtime_sec = SSB_MAX_RUNTIME_SEC,
+    .min_runtime_sec = SSB_MIN_RUNTIME_SEC, .max_runtime_sec = SSB_MAX_RUNTIME_SEC,
     .cooldown_required = false,
-    .init = vm_detect_init,
-    .warmup = vm_detect_warmup,
-    .measure = vm_detect_measure,
-    .cleanup = vm_detect_cleanup,
+    .init = vm_detect_init, .warmup = vm_detect_warmup,
+    .measure = vm_detect_measure, .cleanup = vm_detect_cleanup,
     .num_threads = 1,
 };
 SSB_BENCHMARK_REGISTER(bench_vm_detect);

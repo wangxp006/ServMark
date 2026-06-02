@@ -92,6 +92,17 @@ int system_probe(system_info_t **info_out) {
                         strncpy(info->cpu_model, c, sizeof(info->cpu_model) - 1); }
                     break;
                 }
+                /* ARM64: accumulate implementer + part for model string */
+                if (strncmp(cline, "CPU implementer", 15) == 0 ||
+                    strncmp(cline, "CPU part", 8) == 0) {
+                    char *c = strchr(cline, ':');
+                    if (c) { c++; while (*c == ' ' || *c == '\t') c++;
+                        size_t l = strlen(c); if (l > 0 && c[l-1] == '\n') c[l-1] = '\0';
+                        if (info->cpu_model[0])
+                            strncat(info->cpu_model, " ", sizeof(info->cpu_model) - strlen(info->cpu_model) - 1);
+                        strncat(info->cpu_model, c, sizeof(info->cpu_model) - strlen(info->cpu_model) - 1);
+                    }
+                }
             }
             fclose(f);
         }
@@ -103,7 +114,8 @@ int system_probe(system_info_t **info_out) {
         if (f) {
             char cline[512];
             while (fgets(cline, sizeof(cline), f)) {
-                if (strncmp(cline, "flags", 5) == 0 || strncmp(cline, "Features", 8) == 0) {
+                if (strncmp(cline, "flags", 5) == 0 || strncmp(cline, "Features", 8) == 0 ||
+                    strncmp(cline, "isa", 3) == 0) {
                     char *c = strchr(cline, ':');
                     if (c) { c++; while (*c == ' ' || *c == '\t') c++;
                         size_t l = strlen(c); if (l > 0 && c[l-1] == '\n') c[l-1] = '\0';

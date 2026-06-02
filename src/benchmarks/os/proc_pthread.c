@@ -6,6 +6,15 @@
 
 #define NUM_THREADS_PER_ITER 5000
 
+/*
+ * pthread create/join latency benchmark.
+ *
+ * Creates and joins NUM_THREADS_PER_ITER threads sequentially. Each thread
+ * has the default 8MB stack, so this heavily exercises the kernel's mmap/
+ * munmap path for thread stack allocation. On NUMA systems, stack placement
+ * follows the default memory policy (typically local-node allocation).
+ */
+
 typedef struct {
     int dummy;
 } proc_pthread_state_t;
@@ -17,15 +26,17 @@ static void *dummy_thread(void *arg) {
 
 static int proc_pthread_init(void **state) {
     proc_pthread_state_t *s = calloc(1, sizeof(*s));
+    if (!s) return -1;
     *state = s;
-    return (s != NULL) ? 0 : -1;
+    return 0;
 }
 
 static int proc_pthread_warmup(void *state) {
     (void)state;
     pthread_t threads[100];
     for (int i = 0; i < 100; i++) {
-        pthread_create(&threads[i], NULL, dummy_thread, NULL);
+        if (pthread_create(&threads[i], NULL, dummy_thread, NULL) != 0)
+            break;
         pthread_join(threads[i], NULL);
     }
     return 0;
@@ -34,14 +45,24 @@ static int proc_pthread_warmup(void *state) {
 static int proc_pthread_measure(void *state, measurement_t *result) {
     (void)state;
     struct timespec t0, t1;
+    int created = 0;
+
     pthread_t *threads = malloc(NUM_THREADS_PER_ITER * sizeof(pthread_t));
+    if (!threads) {
+        memset(result, 0, sizeof(*result));
+        return -1;
+    }
 
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
-    for (int i = 0; i < NUM_THREADS_PER_ITER; i++)
-        pthread_create(&threads[i], NULL, dummy_thread, NULL);
-    for (int i = 0; i < NUM_THREADS_PER_ITER; i++)
+    for (int i = 0; i < NUM_THREADS_PER_ITER; i++) {
+        if (pthread_create(&threads[i], NULL, dummy_thread, NULL) != 0)
+            break;
+        created++;
+    }
+    for (int i = 0; i < created; i++) {
         pthread_join(threads[i], NULL);
+    }
 
     clock_gettime(CLOCK_MONOTONIC, &t1);
 
@@ -49,7 +70,10 @@ static int proc_pthread_measure(void *state, measurement_t *result) {
 
     double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
     memset(result, 0, sizeof(*result));
-    result->primary_metric = elapsed * 1e6 / NUM_THREADS_PER_ITER;
+    if (created > 0)
+        result->primary_metric = elapsed * 1e6 / created;
+    else
+        result->primary_metric = 0.0;
     result->wall_seconds = elapsed;
     return 0;
 }
@@ -62,7 +86,7 @@ static int proc_pthread_cleanup(void *state) {
 benchmark_t bench_proc_pthread = {
     .name = "proc-pthread",
     .category = "C6",
-    .description = "pthread create/join latency",
+    .description = "pthread create/join latency (sequential, includes stack mmap/munmap)",
     .tier = 1,
     .primary_metric_name = "us/thread",
     .higher_is_better = false,

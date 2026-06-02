@@ -7,27 +7,28 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <pthread.h>
+#include <stdatomic.h>
 
 #define PORT 19992
 #define NUM_CONNS 10000
 
 typedef struct {
     int listen_fd;
-    volatile int ready;
-    volatile int done;
-    volatile int64_t accepted;
+    _Atomic int ready;
+    _Atomic int done;
+    _Atomic int64_t accepted;
 } net_conn_rate_state_t;
 
 static void *acceptor(void *arg) {
     net_conn_rate_state_t *s = (net_conn_rate_state_t *)arg;
     struct sockaddr_in addr;
     socklen_t alen = sizeof(addr);
-    s->ready = 1;
-    while (!s->done) {
+    atomic_store_explicit(&s->ready, 1, memory_order_release);
+    while (!atomic_load_explicit(&s->done, memory_order_acquire)) {
         int c = accept(s->listen_fd, (struct sockaddr *)&addr, &alen);
         if (c >= 0) {
             close(c);
-            __sync_fetch_and_add(&s->accepted, 1);
+            atomic_fetch_add(&s->accepted, 1);
         }
     }
     return NULL;
@@ -54,10 +55,10 @@ static int net_conn_rate_init(void **state) {
 
 static int net_conn_rate_warmup(void *state) {
     net_conn_rate_state_t *s = (net_conn_rate_state_t *)state;
-    s->ready = 0; s->done = 0; s->accepted = 0;
+    atomic_store(&s->ready, 0); atomic_store(&s->done, 0); atomic_store(&s->accepted, 0);
     pthread_t at;
     pthread_create(&at, NULL, acceptor, s);
-    while (!s->ready) ;
+    while (!atomic_load_explicit(&s->ready, memory_order_acquire)) ;
     struct sockaddr_in dst = {0};
     dst.sin_family = AF_INET;
     dst.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
@@ -66,7 +67,7 @@ static int net_conn_rate_warmup(void *state) {
         int fd = socket(AF_INET, SOCK_STREAM, 0);
         if (connect(fd, (struct sockaddr *)&dst, sizeof(dst)) == 0) close(fd);
     }
-    s->done = 1;
+    atomic_store_explicit(&s->done, 1, memory_order_release);
     pthread_join(at, NULL);
     return 0;
 }
@@ -75,10 +76,10 @@ static int net_conn_rate_measure(void *state, measurement_t *result) {
     net_conn_rate_state_t *s = (net_conn_rate_state_t *)state;
     struct timespec t0, t1;
 
-    s->ready = 0; s->done = 0; s->accepted = 0;
+    atomic_store(&s->ready, 0); atomic_store(&s->done, 0); atomic_store(&s->accepted, 0);
     pthread_t at;
     pthread_create(&at, NULL, acceptor, s);
-    while (!s->ready) ;
+    while (!atomic_load_explicit(&s->ready, memory_order_acquire)) ;
 
     struct sockaddr_in dst = {0};
     dst.sin_family = AF_INET;
@@ -93,7 +94,7 @@ static int net_conn_rate_measure(void *state, measurement_t *result) {
             close(fd);
     }
 
-    s->done = 1;
+    atomic_store_explicit(&s->done, 1, memory_order_release);
     pthread_join(at, NULL);
 
     clock_gettime(CLOCK_MONOTONIC, &t1);

@@ -7,8 +7,14 @@
 
 #define CALLS_PER_ITER 5000000
 
-/* UnixBench System Call Overhead exact equivalent:
- * Measures getpid() latency in a tight loop */
+/*
+ * getpid() system call overhead benchmark (UnixBench exact equivalent).
+ *
+ * On modern Linux, getpid() reads a cached value from task_struct and
+ * the dominant cost is syscall entry/exit (SWAPGS + SYSCALL + SYSRET
+ * on x86, ~100-150ns). KPTI (Meltdown mitigation) may add a CR3 write
+ * on vulnerable Intel CPUs. On AMD and ARM, KPTI is not applicable.
+ */
 
 typedef struct {
     volatile int64_t sink;
@@ -28,7 +34,7 @@ static int syscall_getpid_warmup(void *state) {
         sink += getpid();
     }
     __asm__ __volatile__("" : "+r"(sink));
-    (void)s;
+    s->sink = sink;
     return 0;
 }
 
@@ -45,9 +51,8 @@ static int syscall_getpid_measure(void *state, measurement_t *result) {
 
     clock_gettime(CLOCK_MONOTONIC, &t1);
 
-    /* Prevent DCE */
     __asm__ __volatile__("" : "+r"(sink));
-    s->sink = sink;
+    s->sink = sink; /* persist sink to prevent DCE across iterations */
 
     double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
     memset(result, 0, sizeof(*result));
@@ -65,10 +70,10 @@ static int syscall_getpid_cleanup(void *state) {
 benchmark_t bench_syscall_getpid = {
     .name = "syscall-getpid",
     .category = "C12",
-    .description = "getpid() system call overhead (UnixBench exact equivalent)",
+    .description = "getpid() system call overhead (UnixBench exact equivalent, ns/call)",
     .tier = 1,
     .primary_metric_name = "ns/call",
-    .higher_is_better = false,  /* latency: lower is better */
+    .higher_is_better = false,
     .min_iterations = SSB_MIN_ITERATIONS,
     .max_iterations = SSB_MAX_ITERATIONS,
     .convergence_target = SSB_CONVERGENCE_TARGET,

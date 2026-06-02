@@ -9,6 +9,15 @@
 
 #define PYTHON_ITERS 50
 
+/*
+ * Python script throughput benchmark.
+ *
+ * Forks and execs python3 to run a JSON serialize/deserialize script.
+ * The measured cost is dominated by Python interpreter startup and the
+ * json module import (~10 .py files from stdlib), not by OS primitives.
+ * This is effectively a Python startup benchmark, not an OS benchmark.
+ */
+
 typedef struct {
     char *script_path;
 } script_python_state_t;
@@ -28,8 +37,13 @@ static int script_python_init(void **state) {
     script_python_state_t *s = calloc(1, sizeof(*s));
     if (!s) return -1;
     s->script_path = strdup("/tmp/ssb_python_test.py");
+    if (!s->script_path) { free(s); return -1; }
     FILE *f = fopen(s->script_path, "w");
-    if (!f) { free(s); return -1; }
+    if (!f) {
+        free(s->script_path);
+        free(s);
+        return -1;
+    }
     fprintf(f, "%s", python_script);
     fclose(f);
     *state = s;
@@ -44,14 +58,17 @@ static int script_python_warmup(void *state) {
         execlp("python", "python", s->script_path, NULL);
         _exit(127);
     }
-    int st;
-    waitpid(pid, &st, 0);
+    if (pid > 0) {
+        int st;
+        waitpid(pid, &st, 0);
+    }
     return 0;
 }
 
 static int script_python_measure(void *state, measurement_t *result) {
     script_python_state_t *s = (script_python_state_t *)state;
     struct timespec t0, t1;
+    int actual_runs = 0;
 
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
@@ -62,23 +79,32 @@ static int script_python_measure(void *state, measurement_t *result) {
             execlp("python", "python", s->script_path, NULL);
             _exit(127);
         }
-        int status;
-        waitpid(pid, &status, 0);
+        if (pid > 0) {
+            int status;
+            waitpid(pid, &status, 0);
+            actual_runs++;
+        }
+        /* pid == -1 (fork failed): silently skip, tracked by actual_runs */
     }
 
     clock_gettime(CLOCK_MONOTONIC, &t1);
 
     double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
     memset(result, 0, sizeof(*result));
-    result->primary_metric = (double)PYTHON_ITERS / elapsed;
+    if (actual_runs > 0)
+        result->primary_metric = (double)actual_runs / elapsed;
+    else
+        result->primary_metric = 0.0;
     result->wall_seconds = elapsed;
     return 0;
 }
 
 static int script_python_cleanup(void *state) {
     script_python_state_t *s = (script_python_state_t *)state;
-    unlink(s->script_path);
-    free(s->script_path);
+    if (s->script_path) {
+        unlink(s->script_path);
+        free(s->script_path);
+    }
     free(s);
     return 0;
 }
@@ -86,7 +112,7 @@ static int script_python_cleanup(void *state) {
 benchmark_t bench_script_python = {
     .name = "script-python",
     .category = "C9",
-    .description = "Python script throughput (JSON serialize + dict ops)",
+    .description = "Python script throughput (fork+exec+JSON serialize/deserialize, py3 startup)",
     .tier = 1,
     .primary_metric_name = "scripts/sec",
     .higher_is_better = true,

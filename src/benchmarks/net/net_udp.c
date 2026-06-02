@@ -7,6 +7,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <pthread.h>
+#include <stdatomic.h>
 
 #define PORT 19991
 #define MSG_SIZE 1472
@@ -14,20 +15,20 @@
 
 typedef struct {
     int fd;
-    volatile int ready;
-    volatile int64_t packets;
-    volatile int done;
+    _Atomic int ready;
+    _Atomic int64_t packets;
+    _Atomic int done;
 } net_udp_state_t;
 
 static void *udp_receiver(void *arg) {
     net_udp_state_t *s = (net_udp_state_t *)arg;
     char buf[MSG_SIZE];
-    s->ready = 1;
+    atomic_store_explicit(&s->ready, 1, memory_order_release);
     struct sockaddr_in from;
     socklen_t flen = sizeof(from);
-    while (!s->done) {
+    while (!atomic_load_explicit(&s->done, memory_order_acquire)) {
         if (recvfrom(s->fd, buf, MSG_SIZE, 0, (struct sockaddr *)&from, &flen) > 0)
-            __sync_fetch_and_add(&s->packets, 1);
+            atomic_fetch_add(&s->packets, 1);
     }
     return NULL;
 }
@@ -37,7 +38,6 @@ static int net_udp_init(void **state) {
     if (!s) return -1;
     s->fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (s->fd < 0) { free(s); return -1; }
-
     struct sockaddr_in addr = {0};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
@@ -51,11 +51,10 @@ static int net_udp_init(void **state) {
 
 static int net_udp_warmup(void *state) {
     net_udp_state_t *s = (net_udp_state_t *)state;
-    s->ready = 0; s->packets = 0; s->done = 0;
+    atomic_store(&s->ready, 0); atomic_store(&s->packets, 0); atomic_store(&s->done, 0);
     pthread_t rt;
     pthread_create(&rt, NULL, udp_receiver, s);
-    while (!s->ready) ;
-
+    while (!atomic_load_explicit(&s->ready, memory_order_acquire)) ;
     int send_fd = socket(AF_INET, SOCK_DGRAM, 0);
     struct sockaddr_in dst = {0};
     dst.sin_family = AF_INET;
@@ -66,7 +65,7 @@ static int net_udp_warmup(void *state) {
     for (int i = 0; i < 100; i++)
         sendto(send_fd, buf, MSG_SIZE, 0, (struct sockaddr *)&dst, sizeof(dst));
     close(send_fd);
-    s->done = 1;
+    atomic_store_explicit(&s->done, 1, memory_order_release);
     pthread_join(rt, NULL);
     return 0;
 }
@@ -75,17 +74,16 @@ static int net_udp_measure(void *state, measurement_t *result) {
     net_udp_state_t *s = (net_udp_state_t *)state;
     struct timespec t0, t1;
 
-    s->ready = 0; s->packets = 0; s->done = 0;
+    atomic_store(&s->ready, 0); atomic_store(&s->packets, 0); atomic_store(&s->done, 0);
     pthread_t rt;
     pthread_create(&rt, NULL, udp_receiver, s);
-    while (!s->ready) ;
+    while (!atomic_load_explicit(&s->ready, memory_order_acquire)) ;
 
     int send_fd = socket(AF_INET, SOCK_DGRAM, 0);
     struct sockaddr_in dst = {0};
     dst.sin_family = AF_INET;
     dst.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     dst.sin_port = htons(PORT);
-
     char *buf = malloc(MSG_SIZE);
     memset(buf, 'U', MSG_SIZE);
 
@@ -95,7 +93,7 @@ static int net_udp_measure(void *state, measurement_t *result) {
         sendto(send_fd, buf, MSG_SIZE, 0, (struct sockaddr *)&dst, sizeof(dst));
 
     close(send_fd);
-    s->done = 1;
+    atomic_store_explicit(&s->done, 1, memory_order_release);
     pthread_join(rt, NULL);
     free(buf);
 
@@ -103,7 +101,7 @@ static int net_udp_measure(void *state, measurement_t *result) {
 
     double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
     memset(result, 0, sizeof(*result));
-    result->primary_metric = (double)s->packets / elapsed;
+    result->primary_metric = (double)atomic_load(&s->packets) / elapsed;
     result->wall_seconds = elapsed;
     return 0;
 }

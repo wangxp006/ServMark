@@ -9,6 +9,14 @@
 
 #define SCRIPT_ITERS 200
 
+/*
+ * Shell script throughput benchmark.
+ *
+ * Forks and execs /bin/sh to run a sed + arithmetic loop. The measured cost
+ * is dominated by shell interpreter startup, subshell creation (pipe in the
+ * script body), and sed execution — not by OS primitives.
+ */
+
 typedef struct {
     char *script_path;
 } script_shell_state_t;
@@ -25,10 +33,14 @@ static const char *shell_script =
 static int script_shell_init(void **state) {
     script_shell_state_t *s = calloc(1, sizeof(*s));
     if (!s) return -1;
-    /* Write script to temp file */
     s->script_path = strdup("/tmp/ssb_shell_test.sh");
+    if (!s->script_path) { free(s); return -1; }
     FILE *f = fopen(s->script_path, "w");
-    if (!f) { free(s); return -1; }
+    if (!f) {
+        free(s->script_path);
+        free(s);
+        return -1;
+    }
     fprintf(f, "%s", shell_script);
     fclose(f);
     chmod(s->script_path, 0755);
@@ -43,14 +55,17 @@ static int script_shell_warmup(void *state) {
         execl("/bin/sh", "sh", s->script_path, NULL);
         _exit(127);
     }
-    int st;
-    waitpid(pid, &st, 0);
+    if (pid > 0) {
+        int st;
+        waitpid(pid, &st, 0);
+    }
     return 0;
 }
 
 static int script_shell_measure(void *state, measurement_t *result) {
     script_shell_state_t *s = (script_shell_state_t *)state;
     struct timespec t0, t1;
+    int actual_runs = 0;
 
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
@@ -60,23 +75,32 @@ static int script_shell_measure(void *state, measurement_t *result) {
             execl("/bin/sh", "sh", s->script_path, NULL);
             _exit(127);
         }
-        int status;
-        waitpid(pid, &status, 0);
+        if (pid > 0) {
+            int status;
+            waitpid(pid, &status, 0);
+            actual_runs++;
+        }
+        /* pid == -1 (fork failed): silently skip, tracked by actual_runs */
     }
 
     clock_gettime(CLOCK_MONOTONIC, &t1);
 
     double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
     memset(result, 0, sizeof(*result));
-    result->primary_metric = (double)SCRIPT_ITERS / elapsed;
+    if (actual_runs > 0)
+        result->primary_metric = (double)actual_runs / elapsed;
+    else
+        result->primary_metric = 0.0;
     result->wall_seconds = elapsed;
     return 0;
 }
 
 static int script_shell_cleanup(void *state) {
     script_shell_state_t *s = (script_shell_state_t *)state;
-    unlink(s->script_path);
-    free(s->script_path);
+    if (s->script_path) {
+        unlink(s->script_path);
+        free(s->script_path);
+    }
     free(s);
     return 0;
 }
@@ -84,7 +108,7 @@ static int script_shell_cleanup(void *state) {
 benchmark_t bench_script_shell = {
     .name = "script-shell",
     .category = "C9",
-    .description = "Shell script throughput (UnixBench Shell Scripts exact equivalent)",
+    .description = "Shell script throughput (fork+exec /bin/sh + sed + arithmetic loop)",
     .tier = 1,
     .primary_metric_name = "scripts/sec",
     .higher_is_better = true,

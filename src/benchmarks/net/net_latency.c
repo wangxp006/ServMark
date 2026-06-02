@@ -8,6 +8,7 @@
 #include <arpa/inet.h>
 #include <netinet/tcp.h>
 #include <pthread.h>
+#include <stdatomic.h>
 
 #define PORT 19993
 #define NUM_RRS 50000
@@ -15,20 +16,20 @@
 
 typedef struct {
     int listen_fd;
-    volatile int ready;
-    volatile int done;
+    _Atomic int ready;
+    _Atomic int done;
 } net_latency_state_t;
 
 static void *echo_server(void *arg) {
     net_latency_state_t *s = (net_latency_state_t *)arg;
     struct sockaddr_in addr;
     socklen_t alen = sizeof(addr);
-    s->ready = 1;
+    atomic_store_explicit(&s->ready, 1, memory_order_release);
     int client = accept(s->listen_fd, (struct sockaddr *)&addr, &alen);
     if (client < 0) return NULL;
 
     char buf[MSG_SIZE];
-    while (!s->done) {
+    while (!atomic_load_explicit(&s->done, memory_order_acquire)) {
         ssize_t n = recv(client, buf, MSG_SIZE, 0);
         if (n <= 0) break;
         send(client, buf, n, 0);
@@ -59,10 +60,10 @@ static int net_latency_init(void **state) {
 
 static int net_latency_warmup(void *state) {
     net_latency_state_t *s = (net_latency_state_t *)state;
-    s->ready = 0; s->done = 0;
+    atomic_store(&s->ready, 0); atomic_store(&s->done, 0);
     pthread_t st;
     pthread_create(&st, NULL, echo_server, s);
-    while (!s->ready) ;
+    while (!atomic_load_explicit(&s->ready, memory_order_acquire)) ;
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     struct sockaddr_in dst = {0};
     dst.sin_family = AF_INET;
@@ -77,7 +78,7 @@ static int net_latency_warmup(void *state) {
         }
         close(fd);
     }
-    s->done = 1;
+    atomic_store_explicit(&s->done, 1, memory_order_release);
     pthread_join(st, NULL);
     return 0;
 }
@@ -88,10 +89,10 @@ static int net_latency_measure(void *state, measurement_t *result) {
     volatile int64_t sink = 0;
     int64_t total_rrs = 0;
 
-    s->ready = 0; s->done = 0;
+    atomic_store(&s->ready, 0); atomic_store(&s->done, 0);
     pthread_t st;
     pthread_create(&st, NULL, echo_server, s);
-    while (!s->ready) ;
+    while (!atomic_load_explicit(&s->ready, memory_order_acquire)) ;
 
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     struct sockaddr_in dst = {0};
@@ -99,7 +100,8 @@ static int net_latency_measure(void *state, measurement_t *result) {
     dst.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     dst.sin_port = htons(PORT);
     if (connect(fd, (struct sockaddr *)&dst, sizeof(dst)) < 0) {
-        s->done = 1; pthread_join(st, NULL);
+        atomic_store_explicit(&s->done, 1, memory_order_release);
+        pthread_join(st, NULL);
         return -1;
     }
 
@@ -119,7 +121,7 @@ static int net_latency_measure(void *state, measurement_t *result) {
     clock_gettime(CLOCK_MONOTONIC, &t1);
 
     close(fd);
-    s->done = 1;
+    atomic_store_explicit(&s->done, 1, memory_order_release);
     pthread_join(st, NULL);
     __asm__ __volatile__("" : "+r"(sink));
 

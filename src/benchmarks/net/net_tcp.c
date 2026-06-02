@@ -8,6 +8,7 @@
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <pthread.h>
+#include <stdatomic.h>
 
 #define PORT_BASE 19990
 #define MSG_SIZE (64 * 1024)
@@ -15,22 +16,22 @@
 
 typedef struct {
     int listen_fd;
-    volatile int ready;
-    volatile int64_t total_bytes;
+    _Atomic int ready;
+    _Atomic int64_t total_bytes;
 } net_tcp_state_t;
 
 static void *tcp_server(void *arg) {
     net_tcp_state_t *s = (net_tcp_state_t *)arg;
     struct sockaddr_in addr;
     socklen_t alen = sizeof(addr);
-    s->ready = 1;
+    atomic_store_explicit(&s->ready, 1, memory_order_release);
     int client = accept(s->listen_fd, (struct sockaddr *)&addr, &alen);
     if (client < 0) return NULL;
 
     char *buf = malloc(MSG_SIZE);
     ssize_t n;
     while ((n = recv(client, buf, MSG_SIZE, 0)) > 0)
-        __sync_fetch_and_add(&s->total_bytes, n);
+        atomic_fetch_add(&s->total_bytes, n);
     free(buf);
     close(client);
     return NULL;
@@ -41,15 +42,12 @@ static int net_tcp_init(void **state) {
     if (!s) return -1;
     s->listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (s->listen_fd < 0) { free(s); return -1; }
-
     int opt = 1;
     setsockopt(s->listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-
     struct sockaddr_in addr = {0};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     addr.sin_port = htons(PORT_BASE);
-
     if (bind(s->listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         close(s->listen_fd); free(s); return -1;
     }
@@ -60,11 +58,10 @@ static int net_tcp_init(void **state) {
 
 static int net_tcp_warmup(void *state) {
     net_tcp_state_t *s = (net_tcp_state_t *)state;
-    s->ready = 0; s->total_bytes = 0;
+    atomic_store(&s->ready, 0); atomic_store(&s->total_bytes, 0);
     pthread_t st;
     pthread_create(&st, NULL, tcp_server, s);
-    while (!s->ready) ;
-
+    while (!atomic_load_explicit(&s->ready, memory_order_acquire)) ;
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     struct sockaddr_in addr = {0};
     addr.sin_family = AF_INET;
@@ -85,17 +82,16 @@ static int net_tcp_measure(void *state, measurement_t *result) {
     net_tcp_state_t *s = (net_tcp_state_t *)state;
     struct timespec t0, t1;
 
-    s->ready = 0; s->total_bytes = 0;
+    atomic_store(&s->ready, 0); atomic_store(&s->total_bytes, 0);
     pthread_t st;
     pthread_create(&st, NULL, tcp_server, s);
-    while (!s->ready) ;
+    while (!atomic_load_explicit(&s->ready, memory_order_acquire)) ;
 
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     struct sockaddr_in addr = {0};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     addr.sin_port = htons(PORT_BASE);
-
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         pthread_join(st, NULL);
         return -1;
@@ -119,7 +115,7 @@ static int net_tcp_measure(void *state, measurement_t *result) {
 
     double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
     memset(result, 0, sizeof(*result));
-    result->primary_metric = (double)s->total_bytes / elapsed;
+    result->primary_metric = (double)atomic_load(&s->total_bytes) / elapsed;
     result->wall_seconds = elapsed;
     return 0;
 }

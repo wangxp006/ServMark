@@ -4,29 +4,42 @@
 #include <time.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <stdatomic.h>
 
 #define SWITCHES_PER_ITER 1000000
 
-/* UnixBench Pipe-based Context Switching exact equivalent:
- * Two threads ping-pong a byte through a pipe */
+/*
+ * Pipe-based context switching benchmark (UnixBench Pipe Ctx Switch equivalent).
+ *
+ * Two threads ping-pong a byte through a pipe. On modern kernels the default
+ * pipe capacity is 64KB (16 pages), so 1-byte writes never fill the buffer
+ * and reads never block on empty — the pipe acts as a signalling channel
+ * whose syscall entry/exit cost may dominate context switch latency.
+ */
 
 typedef struct {
     int pipe_fd[2];
     pthread_t thread;
-    volatile bool running;
-    volatile bool thread_ready;
-    int64_t switch_count;
+    _Atomic bool thread_ready;
+    _Atomic bool thread_failed;
+    _Atomic int64_t switch_count;
 } cswitch_pipe_state_t;
 
 static void *ping_thread(void *arg) {
     cswitch_pipe_state_t *s = (cswitch_pipe_state_t *)arg;
     char c = 'x';
-    s->thread_ready = true;
+    atomic_store(&s->thread_ready, true);
 
-    for (int64_t i = 0; i < SWITCHES_PER_ITER / 2; i++) {
-        if (write(s->pipe_fd[1], &c, 1) != 1) break;
-        if (read(s->pipe_fd[0], &c, 1) != 1) break;
-        __sync_fetch_and_add(&s->switch_count, 2);
+    for (int i = 0; i < SWITCHES_PER_ITER / 2; i++) {
+        if (write(s->pipe_fd[1], &c, 1) != 1) {
+            atomic_store(&s->thread_failed, true);
+            break;
+        }
+        if (read(s->pipe_fd[0], &c, 1) != 1) {
+            atomic_store(&s->thread_failed, true);
+            break;
+        }
+        atomic_fetch_add(&s->switch_count, 2);
     }
     return NULL;
 }
@@ -41,7 +54,6 @@ static int cswitch_pipe_init(void **state) {
 
 static int cswitch_pipe_warmup(void *state) {
     cswitch_pipe_state_t *s = (cswitch_pipe_state_t *)state;
-    /* Quick warmup */
     char c = 'x';
     for (int i = 0; i < 10000; i++) {
         write(s->pipe_fd[1], &c, 1);
@@ -52,22 +64,28 @@ static int cswitch_pipe_warmup(void *state) {
 
 static int cswitch_pipe_measure(void *state, measurement_t *result) {
     cswitch_pipe_state_t *s = (cswitch_pipe_state_t *)state;
-    s->running = true;
-    s->thread_ready = false;
-    s->switch_count = 0;
+    int ret;
 
-    /* Pre-create the ping thread before starting the timer */
-    pthread_create(&s->thread, NULL, ping_thread, s);
+    atomic_store(&s->thread_ready, false);
+    atomic_store(&s->thread_failed, false);
+    atomic_store(&s->switch_count, 0);
+
+    ret = pthread_create(&s->thread, NULL, ping_thread, s);
+    if (ret != 0) {
+        memset(result, 0, sizeof(*result));
+        return -1;
+    }
 
     /* Wait for thread to be ready, then start timing */
-    while (!s->thread_ready) ;
+    while (!atomic_load(&s->thread_ready))
+        ;
 
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
     /* Pong: read and write back */
     char c = 'y';
-    for (int64_t i = 0; i < SWITCHES_PER_ITER / 2; i++) {
+    for (int i = 0; i < SWITCHES_PER_ITER / 2; i++) {
         if (read(s->pipe_fd[0], &c, 1) != 1) break;
         if (write(s->pipe_fd[1], &c, 1) != 1) break;
     }
@@ -75,13 +93,16 @@ static int cswitch_pipe_measure(void *state, measurement_t *result) {
     clock_gettime(CLOCK_MONOTONIC, &t1);
 
     pthread_join(s->thread, NULL);
-    s->running = false;
+
+    if (atomic_load(&s->thread_failed)) {
+        memset(result, 0, sizeof(*result));
+        return -1;
+    }
 
     double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
     memset(result, 0, sizeof(*result));
-    result->primary_metric = (double)s->switch_count / elapsed; /* switches/sec */
+    result->primary_metric = (double)atomic_load(&s->switch_count) / elapsed;
     result->wall_seconds = elapsed;
-
     return 0;
 }
 

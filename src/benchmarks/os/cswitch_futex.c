@@ -3,6 +3,7 @@
 #include <string.h>
 #include <time.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <linux/futex.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -10,22 +11,39 @@
 #define SWITCHES 1000000
 #define NUM_THREADS 2
 
+/*
+ * Futex-based context switching benchmark.
+ *
+ * Two threads ping-pong via futex wait/wake. The correct handoff protocol:
+ *   Thread A: futex_word = 1; FUTEX_WAKE; FUTEX_WAIT(&futex_word, 1)
+ *             (waits until futex_word != 1 — B sets it back to 0)
+ *   Thread B: FUTEX_WAIT(&futex_word, 0)
+ *             (waits until futex_word != 0 — A sets it to 1)
+ *             futex_word = 0; FUTEX_WAKE
+ *             (resets to 0 so A's next WAIT(1) will see futex_word==1 and sleep)
+ *
+ * Each side toggles futex_word to the value the other side waits for,
+ * ensuring both threads actually sleep on every iteration.
+ */
+
 typedef struct {
-    volatile int futex_word;
-    volatile int ready;
-    volatile int done;
-    volatile int64_t switches;
+    _Atomic int futex_word;
+    _Atomic int ready;
+    _Atomic int done;
+    _Atomic int64_t switches;
     pthread_t thread;
 } cswitch_futex_state_t;
 
 static void *futex_thread(void *arg) {
     cswitch_futex_state_t *s = (cswitch_futex_state_t *)arg;
-    s->ready = 1;
-    for (int64_t i = 0; i < SWITCHES / 2; i++) {
+    atomic_store(&s->ready, 1);
+    for (int i = 0; i < SWITCHES / 2; i++) {
+        /* Wait until main thread sets futex_word to 1 and wakes us */
         syscall(SYS_futex, &s->futex_word, FUTEX_WAIT, 0, NULL, NULL, 0);
-        s->futex_word = 1;
+        /* Signal main: reset futex_word to 0 so main's WAIT(1) will sleep */
+        atomic_store(&s->futex_word, 0);
         syscall(SYS_futex, &s->futex_word, FUTEX_WAKE, 1, NULL, NULL, 0);
-        __sync_fetch_and_add(&s->switches, 2);
+        atomic_fetch_add(&s->switches, 2);
     }
     return NULL;
 }
@@ -33,14 +51,15 @@ static void *futex_thread(void *arg) {
 static int cswitch_futex_init(void **state) {
     cswitch_futex_state_t *s = calloc(1, sizeof(*s));
     if (!s) return -1;
-    s->futex_word = 0;
+    atomic_init(&s->futex_word, 0);
     *state = s;
     return 0;
 }
 
 static int cswitch_futex_warmup(void *state) {
     cswitch_futex_state_t *s = (cswitch_futex_state_t *)state;
-    s->futex_word = 1;
+    /* Exercise the futex fast path — warmup without a second thread */
+    atomic_store(&s->futex_word, 1);
     syscall(SYS_futex, &s->futex_word, FUTEX_WAKE, 1, NULL, NULL, 0);
     return 0;
 }
@@ -48,19 +67,30 @@ static int cswitch_futex_warmup(void *state) {
 static int cswitch_futex_measure(void *state, measurement_t *result) {
     cswitch_futex_state_t *s = (cswitch_futex_state_t *)state;
     struct timespec t0, t1;
+    int ret;
 
-    s->ready = s->done = 0;
-    s->switches = 0;
-    s->futex_word = 0;
+    atomic_store(&s->ready, 0);
+    atomic_store(&s->done, 0);
+    atomic_store(&s->switches, 0);
+    atomic_store(&s->futex_word, 0);
 
-    pthread_create(&s->thread, NULL, futex_thread, s);
-    while (!s->ready) ;
+    ret = pthread_create(&s->thread, NULL, futex_thread, s);
+    if (ret != 0) {
+        memset(result, 0, sizeof(*result));
+        return -1;
+    }
+
+    /* Spin until the worker thread signals it is ready */
+    while (!atomic_load(&s->ready))
+        ;
 
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
-    for (int64_t i = 0; i < SWITCHES / 2; i++) {
-        s->futex_word = 1;
+    for (int i = 0; i < SWITCHES / 2; i++) {
+        /* Signal worker: set futex_word to 1, then wake */
+        atomic_store(&s->futex_word, 1);
         syscall(SYS_futex, &s->futex_word, FUTEX_WAKE, 1, NULL, NULL, 0);
+        /* Wait until worker sets futex_word back to 0 */
         syscall(SYS_futex, &s->futex_word, FUTEX_WAIT, 1, NULL, NULL, 0);
     }
 
@@ -70,7 +100,7 @@ static int cswitch_futex_measure(void *state, measurement_t *result) {
 
     double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
     memset(result, 0, sizeof(*result));
-    result->primary_metric = (double)s->switches / elapsed;
+    result->primary_metric = (double)atomic_load(&s->switches) / elapsed;
     result->wall_seconds = elapsed;
     return 0;
 }

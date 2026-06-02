@@ -7,17 +7,24 @@
 
 #define FORKS_PER_ITER 500
 
-/* UnixBench Process Creation exact equivalent:
- * fork() + exec(/bin/true) + wait() loop */
+/*
+ * fork+exec+wait loop benchmark (UnixBench Process Creation equivalent).
+ *
+ * Measures fork() + execl(/bin/true) + waitpid() latency for a tiny
+ * process. Note: the measured cost is dominated by page table duplication
+ * in fork() and teardown in execve(); results from a tiny benchmark
+ * process do not generalize to server workloads with large address spaces.
+ */
 
 typedef struct {
-    int dummy;
+    int dummy; /* reserved for future use (e.g., shared-memory counters) */
 } proc_fork_exec_state_t;
 
 static int proc_fork_exec_init(void **state) {
     proc_fork_exec_state_t *s = calloc(1, sizeof(*s));
+    if (!s) return -1;
     *state = s;
-    return (s != NULL) ? 0 : -1;
+    return 0;
 }
 
 static int proc_fork_exec_warmup(void *state) {
@@ -32,8 +39,10 @@ static int proc_fork_exec_warmup(void *state) {
         if (pid > 0) {
             int status;
             waitpid(pid, &status, 0);
-            sink += WEXITSTATUS(status);
+            if (WIFEXITED(status))
+                sink += WEXITSTATUS(status);
         }
+        /* fork() failure (-1): skip this iteration */
     }
     __asm__ __volatile__("" : "+r"(sink));
     return 0;
@@ -43,6 +52,7 @@ static int proc_fork_exec_measure(void *state, measurement_t *result) {
     (void)state;
     struct timespec t0, t1;
     volatile int sink = 0;
+    int actual_forks = 0;
 
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
@@ -55,8 +65,12 @@ static int proc_fork_exec_measure(void *state, measurement_t *result) {
         if (pid > 0) {
             int status;
             waitpid(pid, &status, 0);
-            sink += WEXITSTATUS(status);
+            if (WIFEXITED(status))
+                sink += WEXITSTATUS(status);
+            actual_forks++;
         }
+        /* pid == -1: fork failed (e.g., resource exhaustion) —
+         * silently skip; actual_forks tracks the real count. */
     }
 
     clock_gettime(CLOCK_MONOTONIC, &t1);
@@ -65,9 +79,11 @@ static int proc_fork_exec_measure(void *state, measurement_t *result) {
 
     double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
     memset(result, 0, sizeof(*result));
-    result->primary_metric = elapsed * 1e6 / FORKS_PER_ITER; /* us/call */
+    if (actual_forks > 0)
+        result->primary_metric = elapsed * 1e6 / actual_forks; /* us/call */
+    else
+        result->primary_metric = 0.0;
     result->wall_seconds = elapsed;
-
     return 0;
 }
 

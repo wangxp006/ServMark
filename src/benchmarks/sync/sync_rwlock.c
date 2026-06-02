@@ -3,15 +3,16 @@
 #include <string.h>
 #include <time.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <unistd.h>
 
 #define OPS_PER_THREAD 150000
 
 typedef struct {
     pthread_rwlock_t rwlock;
-    volatile int64_t data;
-    volatile int ready;
-    volatile int64_t total_ops;
+    _Atomic int64_t data;
+    _Atomic int ready;
+    _Atomic int64_t total_ops;
     int nthreads;
 } sync_rwlock_state_t;
 
@@ -24,15 +25,15 @@ typedef struct {
 static void *rwlock_worker(void *arg) {
     rwlock_thread_arg_t *a = (rwlock_thread_arg_t *)arg;
     sync_rwlock_state_t *s = a->s;
-    while (!s->ready) ;
+    while (!atomic_load_explicit(&s->ready, memory_order_acquire)) ;
     for (int i = 0; i < a->ops; i++) {
         if (a->is_writer) {
             pthread_rwlock_wrlock(&s->rwlock);
-            s->data++;
+            atomic_fetch_add_explicit(&s->data, 1, memory_order_relaxed);
             pthread_rwlock_unlock(&s->rwlock);
         } else {
             pthread_rwlock_rdlock(&s->rwlock);
-            __sync_fetch_and_add(&s->total_ops, 1);
+            atomic_fetch_add_explicit(&s->total_ops, 1, memory_order_relaxed);
             pthread_rwlock_unlock(&s->rwlock);
         }
     }
@@ -53,7 +54,7 @@ static int sync_rwlock_warmup(void *state) {
     sync_rwlock_state_t *s = (sync_rwlock_state_t *)state;
     for (int i = 0; i < 10000; i++) {
         pthread_rwlock_wrlock(&s->rwlock);
-        s->data++;
+        atomic_fetch_add(&s->data, 1);
         pthread_rwlock_unlock(&s->rwlock);
     }
     return 0;
@@ -68,8 +69,8 @@ static int sync_rwlock_measure(void *state, measurement_t *result) {
     if (nreaders < 1) nreaders = 1;
     if (nwriters < 1) nwriters = 1;
 
-    s->data = s->total_ops = 0;
-    s->ready = 0;
+    atomic_store(&s->data, 0); atomic_store(&s->total_ops, 0);
+    atomic_store(&s->ready, 0);
 
     pthread_t *threads = malloc(n * sizeof(pthread_t));
     rwlock_thread_arg_t *args = malloc(n * sizeof(rwlock_thread_arg_t));
@@ -82,7 +83,7 @@ static int sync_rwlock_measure(void *state, measurement_t *result) {
     }
 
     clock_gettime(CLOCK_MONOTONIC, &t0);
-    s->ready = 1;
+    atomic_store_explicit(&s->ready, 1, memory_order_release);
 
     for (int t = 0; t < n; t++)
         pthread_join(threads[t], NULL);
@@ -92,7 +93,7 @@ static int sync_rwlock_measure(void *state, measurement_t *result) {
 
     double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
     memset(result, 0, sizeof(*result));
-    result->primary_metric = (double)s->total_ops / elapsed;
+    result->primary_metric = (double)atomic_load(&s->total_ops) / elapsed;
     result->wall_seconds = elapsed;
     return 0;
 }

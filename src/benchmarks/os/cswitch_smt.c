@@ -3,18 +3,38 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-#include <sched.h>
+#include <pthread.h>
+#include <stdatomic.h>
 
-#define SWITCHES 2000000
-#define ITER_COUNT 50000000
+/*
+ * SMT cache line bouncing benchmark.
+ *
+ * Two threads (pinned to SMT siblings by the harness) each atomically
+ * increment their own counter on the SAME cache line. The cache line
+ * bounces between the two logical cores' L1 caches via the MESI/MOESI
+ * coherence protocol, measuring cross-hyperthread cache line contention.
+ *
+ * ping_count and pong_count are placed adjacently in the struct so they
+ * share a 64-byte cache line on modern x86 and ARM CPUs.
+ */
+
+#define ITER_COUNT 25000000
 
 typedef struct {
-    volatile int flag;
-    volatile int ready;
-    volatile int64_t iters;
-    volatile int64_t ping_count;
-    volatile int64_t pong_count;
+    _Atomic int64_t ping_count;
+    _Atomic int64_t pong_count;
+    pthread_t thread;
+    _Atomic int ready;
 } cswitch_smt_state_t;
+
+static void *pong_thread(void *arg) {
+    cswitch_smt_state_t *s = (cswitch_smt_state_t *)arg;
+    atomic_store(&s->ready, 1);
+    for (int i = 0; i < ITER_COUNT; i++) {
+        atomic_fetch_add(&s->pong_count, 1);
+    }
+    return NULL;
+}
 
 static int cswitch_smt_init(void **state) {
     cswitch_smt_state_t *s = calloc(1, sizeof(*s));
@@ -24,14 +44,11 @@ static int cswitch_smt_init(void **state) {
 }
 
 static int cswitch_smt_warmup(void *state) {
-    /* SMT ping-pong using shared variable */
     cswitch_smt_state_t *s = (cswitch_smt_state_t *)state;
-    volatile int64_t *ping = &s->ping_count;
-    volatile int64_t *pong = &s->pong_count;
-    /* Single-threaded warmup - just exercise atomic ops */
+    /* Single-threaded warmup — primes the atomic execution pipeline */
     for (int i = 0; i < 100000; i++) {
-        __sync_fetch_and_add(ping, 1);
-        __sync_fetch_and_add(pong, 1);
+        atomic_fetch_add(&s->ping_count, 1);
+        atomic_fetch_add(&s->pong_count, 1);
     }
     return 0;
 }
@@ -40,24 +57,42 @@ static int cswitch_smt_measure(void *state, measurement_t *result) {
     cswitch_smt_state_t *s = (cswitch_smt_state_t *)state;
     struct timespec t0, t1;
     volatile int64_t sink = 0;
+    int ret;
+
+    atomic_store(&s->ready, 0);
+    atomic_store(&s->ping_count, 0);
+    atomic_store(&s->pong_count, 0);
+
+    ret = pthread_create(&s->thread, NULL, pong_thread, s);
+    if (ret != 0) {
+        memset(result, 0, sizeof(*result));
+        return -1;
+    }
+
+    while (!atomic_load(&s->ready))
+        ;
 
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
-    /* SMT co-location test: two counters in the same cache line,
-     * measuring cache line bouncing across SMT siblings */
+    /* Main thread hammers ping_count while the pong thread hammers
+     * pong_count. Both counters share the same cache line — each atomic
+     * increment on one logical core invalidates the other core's L1 copy,
+     * forcing a cache line transfer via the coherence protocol. */
     for (int i = 0; i < ITER_COUNT; i++) {
-        __sync_fetch_and_add(&s->ping_count, 1);
-        __sync_fetch_and_add(&s->pong_count, 1);
-        sink += s->ping_count + s->pong_count;
+        atomic_fetch_add(&s->ping_count, 1);
     }
 
     clock_gettime(CLOCK_MONOTONIC, &t1);
+
+    pthread_join(s->thread, NULL);
+
+    sink = atomic_load(&s->ping_count) + atomic_load(&s->pong_count);
     __asm__ __volatile__("" : "+r"(sink));
 
     double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
     memset(result, 0, sizeof(*result));
-    /* Report atomic ops per second - measures cache line contention */
-    result->primary_metric = 2.0 * ITER_COUNT / elapsed;
+    /* Report total atomic ops per second across both threads */
+    result->primary_metric = (double)(sink) / elapsed;
     result->wall_seconds = elapsed;
     return 0;
 }
@@ -70,7 +105,7 @@ static int cswitch_smt_cleanup(void *state) {
 benchmark_t bench_cswitch_smt = {
     .name = "cswitch-smt",
     .category = "C8",
-    .description = "SMT cache line bouncing (same cache line atomic ops)",
+    .description = "SMT cache line bouncing (2 threads, shared cache line atomic ops)",
     .tier = 1,
     .primary_metric_name = "ops/sec",
     .higher_is_better = true,
@@ -84,6 +119,6 @@ benchmark_t bench_cswitch_smt = {
     .warmup = cswitch_smt_warmup,
     .measure = cswitch_smt_measure,
     .cleanup = cswitch_smt_cleanup,
-    .num_threads = 1,
+    .num_threads = 2,
 };
 SSB_BENCHMARK_REGISTER(bench_cswitch_smt);

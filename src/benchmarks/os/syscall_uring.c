@@ -7,6 +7,19 @@
 
 #define NUM_OPS 5000000
 
+/*
+ * Raw syscall() baseline benchmark.
+ *
+ * Measures syscall(SYS_getpid) throughput via the glibc syscall() wrapper.
+ * This goes through the same kernel entry/exit path as the libc getpid()
+ * wrapper (syscall_getpid.c), but with additional glibc dispatch overhead
+ * (~5-10ns for argument marshaling in the variadic syscall() function).
+ *
+ * NOTE: The name "syscall-uring" is aspirational — this benchmark does NOT
+ * use io_uring. It currently measures raw syscall overhead as a baseline
+ * for future io_uring-based benchmarks. See CLAUDE.md.
+ */
+
 typedef struct {
     volatile int64_t sink;
 } syscall_uring_state_t;
@@ -24,6 +37,7 @@ static int syscall_uring_warmup(void *state) {
     for (int i = 0; i < 100000; i++)
         sink += syscall(SYS_getpid);
     __asm__ __volatile__("" : "+r"(sink));
+    s->sink = sink;
     return 0;
 }
 
@@ -34,15 +48,19 @@ static int syscall_uring_measure(void *state, measurement_t *result) {
 
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
-    /* Measure raw syscall(SYS_getpid) as baseline for syscall overhead comparison
-     * This benchmarks the kernel entry/exit cost without vDSO */
+    /*
+     * Raw syscall(SYS_getpid) — same kernel path as getpid() but through
+     * glibc's generic syscall() dispatcher. The small additional overhead
+     * (~5-10ns on x86) comes from argument packing and errno negation.
+     */
     for (int i = 0; i < NUM_OPS; i++) {
         sink += syscall(SYS_getpid);
     }
 
     clock_gettime(CLOCK_MONOTONIC, &t1);
-    s->sink = sink;
+
     __asm__ __volatile__("" : "+r"(sink));
+    s->sink = sink; /* persist sink to prevent DCE across iterations */
 
     double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
     memset(result, 0, sizeof(*result));
@@ -59,7 +77,7 @@ static int syscall_uring_cleanup(void *state) {
 benchmark_t bench_syscall_uring = {
     .name = "syscall-uring",
     .category = "C12",
-    .description = "Raw syscall(SYS_getpid) baseline (no vDSO fast path)",
+    .description = "Raw syscall(SYS_getpid) baseline (glibc syscall dispatcher, no io_uring yet)",
     .tier = 2,
     .primary_metric_name = "calls/sec",
     .higher_is_better = true,

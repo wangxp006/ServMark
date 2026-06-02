@@ -4,21 +4,23 @@
 #include <time.h>
 #include <pthread.h>
 #include <semaphore.h>
+#include <stdatomic.h>
 #include <unistd.h>
 
 #define OPS_PER_ITER 100000
 
 typedef struct {
     sem_t sem;
-    volatile int ready, done;
-    volatile int64_t wakeups;
+    _Atomic int ready, done;
+    _Atomic int64_t wakeups;
     int nwaiters;
 } sync_semaphore_state_t;
 
 static void *sem_waiter(void *arg) {
     sync_semaphore_state_t *s = (sync_semaphore_state_t *)arg;
-    while (!s->ready) ;
-    while (!s->done) sem_wait(&s->sem);
+    while (!atomic_load_explicit(&s->ready, memory_order_acquire)) ;
+    while (!atomic_load_explicit(&s->done, memory_order_acquire))
+        sem_wait(&s->sem);
     return NULL;
 }
 
@@ -46,22 +48,22 @@ static int sync_semaphore_measure(void *state, measurement_t *result) {
     struct timespec t0, t1;
     int n = s->nwaiters;
 
-    s->ready = s->done = 0;
-    s->wakeups = 0;
+    atomic_store(&s->ready, 0); atomic_store(&s->done, 0);
+    atomic_store(&s->wakeups, 0);
 
     pthread_t *waiters = malloc(n * sizeof(pthread_t));
     for (int t = 0; t < n; t++)
         pthread_create(&waiters[t], NULL, sem_waiter, s);
 
     clock_gettime(CLOCK_MONOTONIC, &t0);
-    s->ready = 1;
+    atomic_store_explicit(&s->ready, 1, memory_order_release);
 
     for (int i = 0; i < OPS_PER_ITER; i++) {
         sem_post(&s->sem);
-        s->wakeups++;
+        atomic_fetch_add(&s->wakeups, 1);
     }
 
-    s->done = 1;
+    atomic_store_explicit(&s->done, 1, memory_order_release);
     for (int t = 0; t < n; t++) sem_post(&s->sem);
     for (int t = 0; t < n; t++) pthread_join(waiters[t], NULL);
 
@@ -70,7 +72,7 @@ static int sync_semaphore_measure(void *state, measurement_t *result) {
 
     double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
     memset(result, 0, sizeof(*result));
-    result->primary_metric = (double)s->wakeups / elapsed;
+    result->primary_metric = (double)atomic_load(&s->wakeups) / elapsed;
     result->wall_seconds = elapsed;
     return 0;
 }
