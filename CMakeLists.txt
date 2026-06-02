@@ -72,8 +72,6 @@ add_library(ssbbench_crypto STATIC
     src/benchmarks/crypto/crypto_hash.c src/benchmarks/crypto/crypto_rsa.c
     src/benchmarks/crypto/crypto_ed25519_sign.c src/benchmarks/crypto/crypto_x25519_ecdh.c
     src/benchmarks/crypto/crypto_chacha20_poly1305.c src/benchmarks/crypto/crypto_ecdsa_p256_sign.c
-    src/benchmarks/crypto/crypto_sm2_sign.c src/benchmarks/crypto/crypto_sm3.c
-    src/benchmarks/crypto/crypto_sm4.c
 )
 target_link_libraries(ssbbench_crypto ssbcore)
 
