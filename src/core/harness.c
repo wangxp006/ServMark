@@ -30,8 +30,15 @@ static int run_benchmark_instance(const benchmark_t *bench, double *values_out, 
     int ret = bench->init(&state);
     if (ret != 0) return ret;
 
+    /* Benchmark-defined warmup: lightweight cache/TLB priming (e.g., partial data).
+     * Not all benchmarks define a warmup function; skip if NULL. */
+    if (bench->warmup) {
+        ret = bench->warmup(state);
+        if (ret != 0) { bench->cleanup(state); return ret; }
+    }
+
     /* Warmup: execute full measure() 2x and discard results.
-     * This properly warms caches, TLB, and branch predictors. */
+     * This properly warms caches, TLB, and branch predictors at full scale. */
     for (int i = 0; i < 2; i++) {
         measurement_t wm;
         ret = bench->measure(state, &wm);

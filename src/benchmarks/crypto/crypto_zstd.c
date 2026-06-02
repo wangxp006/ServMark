@@ -8,6 +8,12 @@
 #define DATA_MB 64
 #define DATA_SIZE (DATA_MB * 1024 * 1024)
 
+/* Maximum expected formatted line length from snprintf below.
+ * Format: "%s %s %s %d %s %s %s\n" with up to 7*13-char words + 10-digit int.
+ * Conservatively: 7*13 + 10 + 7 + 1 = 109, rounded up to 128 for safety. */
+#define MAX_LINE_LEN 128
+#define ZSTD_COMPRESS_LEVEL 3
+
 typedef struct {
     uint8_t *original;
     size_t orig_size;
@@ -25,18 +31,24 @@ static int crypto_zstd_init(void **state) {
         free(s->original); free(s->compressed); free(s);
         return -1;
     }
-    /* Generate text-like data for compression */
+    /*
+     * Generate text-like data for compression. Uses a fixed vocabulary of 13
+     * words with rand() (deterministic default seed per C standard) to produce
+     * repeatable, compressible synthetic text. rand() is acceptable here for
+     * benchmark payload generation — never use rand() for cryptographic keys.
+     */
     const char *words[] = {"the","quick","brown","fox","jumps","over","lazy","dog",
                            "benchmark","compress","decompress","throughput","test"};
     char *p = (char *)s->original;
     int remaining = DATA_SIZE;
-    while (remaining > 60) {
+    while (remaining > MAX_LINE_LEN) {
         int n = snprintf(p, remaining, "%s %s %s %d %s %s %s\n",
                 words[rand()%13], words[rand()%13], words[rand()%13],
                 rand(), words[rand()%13], words[rand()%13], words[rand()%13]);
+        if (n < 0 || n >= remaining) break;
         p += n; remaining -= n;
     }
-    s->orig_size = DATA_SIZE;
+    s->orig_size = (size_t)(p - (char *)s->original);
     *state = s;
     return 0;
 }
@@ -45,7 +57,13 @@ static int crypto_zstd_warmup(void *state) {
     crypto_zstd_state_t *s = (crypto_zstd_state_t *)state;
     uint8_t *tmp = malloc(s->comp_capacity);
     uint8_t *decomp = malloc(s->orig_size);
-    size_t csize = ZSTD_compress(tmp, s->comp_capacity, s->original, s->orig_size / 4, 3);
+    if (!tmp || !decomp) {
+        free(tmp); free(decomp);
+        return -1;
+    }
+    size_t csize = ZSTD_compress(tmp, s->comp_capacity,
+                                  s->original, s->orig_size,
+                                  ZSTD_COMPRESS_LEVEL);
     if (!ZSTD_isError(csize))
         ZSTD_decompress(decomp, s->orig_size, tmp, csize);
     free(tmp); free(decomp);
@@ -55,18 +73,28 @@ static int crypto_zstd_warmup(void *state) {
 static int crypto_zstd_measure(void *state, measurement_t *result) {
     crypto_zstd_state_t *s = (crypto_zstd_state_t *)state;
     struct timespec t0, t1;
-
-    size_t csize = ZSTD_compress(s->compressed, s->comp_capacity,
-                                  s->original, s->orig_size, 3);
+    volatile size_t sink = 0;
+    size_t csize;
 
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
     csize = ZSTD_compress(s->compressed, s->comp_capacity,
-                          s->original, s->orig_size, 3);
+                           s->original, s->orig_size,
+                           ZSTD_COMPRESS_LEVEL);
 
     clock_gettime(CLOCK_MONOTONIC, &t1);
 
-    if (ZSTD_isError(csize)) csize = 1;
+    if (ZSTD_isError(csize)) {
+        /* Report zero throughput on compression failure so the harness
+         * can distinguish a failed run from a valid measurement. */
+        memset(result, 0, sizeof(*result));
+        result->primary_metric = 0.0;
+        result->wall_seconds = 0.0;
+        return -1;
+    }
+
+    sink = csize;
+    __asm__ __volatile__("" : "+r"(sink));
 
     double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
     memset(result, 0, sizeof(*result));
@@ -84,7 +112,7 @@ static int crypto_zstd_cleanup(void *state) {
 benchmark_t bench_crypto_zstd = {
     .name = "crypto-zstd",
     .category = "C3",
-    .description = "zstd compress level 3 throughput",
+    .description = "zstd compress level 3 throughput (in-cache, 64MB dataset)",
     .tier = 1,
     .primary_metric_name = "bytes/sec",
     .higher_is_better = true,

@@ -20,14 +20,24 @@ static int crypto_rsa_init(void **state) {
     crypto_rsa_state_t *s = calloc(1, sizeof(*s));
     if (!s) return -1;
 
-    /* Generate RSA-2048 key */
+    /* Generate RSA-2048 key. Check every step — keygen failure is
+     * recoverable (e.g., entropy exhaustion) and must not produce UB. */
     EVP_PKEY_CTX *pctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
-    EVP_PKEY_keygen_init(pctx);
-    EVP_PKEY_CTX_set_rsa_keygen_bits(pctx, 2048);
-    EVP_PKEY_keygen(pctx, &s->pkey);
-    EVP_PKEY_CTX_free(pctx);
+    if (!pctx) { free(s); return -1; }
 
-    if (!s->pkey) { free(s); return -1; }
+    int ret = EVP_PKEY_keygen_init(pctx);
+    if (ret <= 0) { EVP_PKEY_CTX_free(pctx); free(s); return -1; }
+
+    ret = EVP_PKEY_CTX_set_rsa_keygen_bits(pctx, 2048);
+    if (ret <= 0) { EVP_PKEY_CTX_free(pctx); free(s); return -1; }
+
+    ret = EVP_PKEY_keygen(pctx, &s->pkey);
+    EVP_PKEY_CTX_free(pctx);
+    if (ret <= 0 || !s->pkey) {
+        if (s->pkey) EVP_PKEY_free(s->pkey);
+        free(s);
+        return -1;
+    }
 
     s->msg_len = 32;
     s->message = malloc(s->msg_len);
@@ -38,6 +48,8 @@ static int crypto_rsa_init(void **state) {
         free(s->message); free(s->sig); free(s);
         return -1;
     }
+    /* rand() is acceptable for benchmark message generation.
+     * Message content does not affect RSA signing performance. */
     for (size_t i = 0; i < s->msg_len; i++) s->message[i] = rand() & 0xFF;
     *state = s;
     return 0;
@@ -46,30 +58,51 @@ static int crypto_rsa_init(void **state) {
 static int crypto_rsa_warmup(void *state) {
     crypto_rsa_state_t *s = (crypto_rsa_state_t *)state;
     EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+    if (!ctx) return -1;
     size_t slen = s->sig_len;
-    EVP_DigestSignInit(ctx, NULL, EVP_sha256(), NULL, s->pkey);
-    EVP_DigestSign(ctx, s->sig, &slen, s->message, s->msg_len);
+    int ret = 0;
+    ret = EVP_DigestSignInit(ctx, NULL, EVP_sha256(), NULL, s->pkey);
+    if (ret != 1) goto warmup_err;
+    ret = EVP_DigestSign(ctx, s->sig, &slen, s->message, s->msg_len);
+warmup_err:
     EVP_MD_CTX_free(ctx);
-    return 0;
+    return (ret == 1) ? 0 : -1;
 }
 
 static int crypto_rsa_measure(void *state, measurement_t *result) {
     crypto_rsa_state_t *s = (crypto_rsa_state_t *)state;
     struct timespec t0, t1;
     volatile int sink = 0;
+    int ret;
+
+    /*
+     * Create and initialize the signing context ONCE outside the timed loop
+     * so we measure pure RSA-2048 signing throughput, not malloc + sign +
+     * free overhead. Reinitializing the digest signing context with the
+     * same key is the correct EVP pattern for repeated signatures.
+     */
+    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+    if (!ctx) {
+        memset(result, 0, sizeof(*result));
+        return -1;
+    }
 
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
     for (int i = 0; i < NUM_SIGNS; i++) {
-        EVP_MD_CTX *ctx = EVP_MD_CTX_new();
         size_t slen = s->sig_len;
-        EVP_DigestSignInit(ctx, NULL, EVP_sha256(), NULL, s->pkey);
-        EVP_DigestSign(ctx, s->sig, &slen, s->message, s->msg_len);
-        EVP_MD_CTX_free(ctx);
+
+        ret = EVP_DigestSignInit(ctx, NULL, EVP_sha256(), NULL, s->pkey);
+        if (ret != 1) goto measure_err;
+
+        ret = EVP_DigestSign(ctx, s->sig, &slen, s->message, s->msg_len);
+        if (ret != 1) goto measure_err;
+
         sink += s->sig[0];
     }
 
     clock_gettime(CLOCK_MONOTONIC, &t1);
+    EVP_MD_CTX_free(ctx);
     __asm__ __volatile__("" : "+r"(sink));
 
     double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
@@ -77,6 +110,14 @@ static int crypto_rsa_measure(void *state, measurement_t *result) {
     result->primary_metric = (double)NUM_SIGNS / elapsed;
     result->wall_seconds = elapsed;
     return 0;
+
+measure_err:
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    EVP_MD_CTX_free(ctx);
+    memset(result, 0, sizeof(*result));
+    result->primary_metric = 0.0;
+    result->wall_seconds = 0.0;
+    return -1;
 }
 
 static int crypto_rsa_cleanup(void *state) {
@@ -89,7 +130,7 @@ static int crypto_rsa_cleanup(void *state) {
 benchmark_t bench_crypto_rsa = {
     .name = "crypto-rsa",
     .category = "C3",
-    .description = "RSA-2048 SHA-256 signature throughput",
+    .description = "RSA-2048 SHA-256 signature throughput (PKCS#1 v1.5 padding)",
     .tier = 1,
     .primary_metric_name = "signatures/sec",
     .higher_is_better = true,

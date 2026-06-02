@@ -95,28 +95,36 @@ case "$MGR" in
         apt-get update
         apt-get install -y ${PKG_MAP_CC[$MGR]} ${PKG_MAP_CMAKE[$MGR]} \
             ${PKG_MAP_PKGCONFIG[$MGR]} ${PKG_MAP_HWLOC[$MGR]} \
-            ${PKG_MAP_NUMA[$MGR]} ${PKG_MAP_SSL[$MGR]} ${PKG_MAP_ZSTD[$MGR]}
+            ${PKG_MAP_NUMA[$MGR]} ${PKG_MAP_SSL[$MGR]} ${PKG_MAP_ZSTD[$MGR]} \
+            || echo "Note: some packages may not be available in this repo — continuing"
         ;;
     dnf|yum)
-        $PKG_BIN install -y ${PKG_MAP_CC[$MGR]} ${PKG_MAP_CMAKE[$MGR]} \
-            ${PKG_MAP_PKGCONFIG[$MGR]} ${PKG_MAP_HWLOC[$MGR]} \
-            ${PKG_MAP_NUMA[$MGR]} ${PKG_MAP_SSL[$MGR]} ${PKG_MAP_ZSTD[$MGR]}
+        # Install each package group separately so a missing optional package
+        # (e.g. hwloc-devel on older distros) doesn't block everything else.
+        for pkg in ${PKG_MAP_CC[$MGR]} ${PKG_MAP_CMAKE[$MGR]} \
+                   ${PKG_MAP_PKGCONFIG[$MGR]} ${PKG_MAP_HWLOC[$MGR]} \
+                   ${PKG_MAP_NUMA[$MGR]} ${PKG_MAP_SSL[$MGR]} ${PKG_MAP_ZSTD[$MGR]}; do
+            $PKG_BIN install -y "$pkg" || echo "Note: $pkg not available, skipping"
+        done
         ;;
     zypper)
         zypper --non-interactive install ${PKG_MAP_CC[$MGR]} ${PKG_MAP_CMAKE[$MGR]} \
             ${PKG_MAP_PKGCONFIG[$MGR]} ${PKG_MAP_HWLOC[$MGR]} \
-            ${PKG_MAP_NUMA[$MGR]} ${PKG_MAP_SSL[$MGR]} ${PKG_MAP_ZSTD[$MGR]}
+            ${PKG_MAP_NUMA[$MGR]} ${PKG_MAP_SSL[$MGR]} ${PKG_MAP_ZSTD[$MGR]} \
+            || echo "Note: some packages may not be available in this repo — continuing"
         ;;
     pacman)
         pacman -Syu --noconfirm ${PKG_MAP_CC[$MGR]} ${PKG_MAP_CMAKE[$MGR]} \
             ${PKG_MAP_PKGCONFIG[$MGR]} ${PKG_MAP_HWLOC[$MGR]} \
-            ${PKG_MAP_NUMA[$MGR]} ${PKG_MAP_SSL[$MGR]} ${PKG_MAP_ZSTD[$MGR]}
+            ${PKG_MAP_NUMA[$MGR]} ${PKG_MAP_SSL[$MGR]} ${PKG_MAP_ZSTD[$MGR]} \
+            || echo "Note: some packages may not be available in this repo — continuing"
         ;;
     apk)
         apk update
         apk add ${PKG_MAP_CC[$MGR]} ${PKG_MAP_CMAKE[$MGR]} \
             ${PKG_MAP_PKGCONFIG[$MGR]} ${PKG_MAP_HWLOC[$MGR]} \
-            ${PKG_MAP_NUMA[$MGR]} ${PKG_MAP_SSL[$MGR]} ${PKG_MAP_ZSTD[$MGR]}
+            ${PKG_MAP_NUMA[$MGR]} ${PKG_MAP_SSL[$MGR]} ${PKG_MAP_ZSTD[$MGR]} \
+            || echo "Note: some packages may not be available in this repo — continuing"
         ;;
 esac
 
