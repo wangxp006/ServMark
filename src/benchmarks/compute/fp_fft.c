@@ -11,11 +11,11 @@ typedef struct {
     double *real, *imag;
     double *twiddle_cos, *twiddle_sin;
     int *bit_rev;
+    double *work_real, *work_imag;
 } fp_fft_state_t;
 
 static void fft_radix2(double *real, double *imag, int n,
-                       const double *cos_t, const double *sin_t,
-                       const int *rev) {
+                       const double *cos_t, const double *sin_t, const int *rev) {
     for (int i = 0; i < n; i++) {
         int j = rev[i];
         if (i < j) {
@@ -33,8 +33,7 @@ static void fft_radix2(double *real, double *imag, int n,
                 double ti = real[i + j + half] * wi + imag[i + j + half] * wr;
                 real[i + j + half] = real[i + j] - tr;
                 imag[i + j + half] = imag[i + j] - ti;
-                real[i + j] += tr;
-                imag[i + j] += ti;
+                real[i + j] += tr; imag[i + j] += ti;
             }
         }
     }
@@ -44,48 +43,35 @@ static int fp_fft_init(void **state) {
     fp_fft_state_t *s = calloc(1, sizeof(*s));
     if (!s) return -1;
     int n = FFT_N;
-    s->real = malloc(n * sizeof(double));
-    s->imag = malloc(n * sizeof(double));
-    s->twiddle_cos = malloc(n * sizeof(double));
-    s->twiddle_sin = malloc(n * sizeof(double));
-    s->bit_rev = malloc(n * sizeof(int));
-    if (!s->real || !s->imag || !s->twiddle_cos || !s->twiddle_sin || !s->bit_rev) {
+    s->real = malloc(n*sizeof(double)); s->imag = malloc(n*sizeof(double));
+    s->twiddle_cos = malloc(n*sizeof(double)); s->twiddle_sin = malloc(n*sizeof(double));
+    s->bit_rev = malloc(n*sizeof(int));
+    s->work_real = malloc(n*sizeof(double)); s->work_imag = calloc(n, sizeof(double));
+    if (!s->real||!s->imag||!s->twiddle_cos||!s->twiddle_sin||!s->bit_rev||!s->work_real||!s->work_imag) {
         free(s->real); free(s->imag); free(s->twiddle_cos);
-        free(s->twiddle_sin); free(s->bit_rev); free(s);
-        return -1;
+        free(s->twiddle_sin); free(s->bit_rev);
+        free(s->work_real); free(s->work_imag); free(s); return -1;
     }
-    /* Precompute twiddle factors */
     for (int i = 0; i < n; i++) {
-        double angle = -2.0 * M_PI * i / n;
-        s->twiddle_cos[i] = cos(angle);
-        s->twiddle_sin[i] = sin(angle);
+        double a = -2.0*M_PI*i/n;
+        s->twiddle_cos[i]=cos(a); s->twiddle_sin[i]=sin(a);
     }
-    /* Bit reversal */
     for (int i = 0; i < n; i++) {
-        s->bit_rev[i] = 0;
-        for (int bit = 0; (1 << bit) < n; bit++) {
-            if (i & (1 << bit))
-                s->bit_rev[i] |= (n >> (bit + 1));
-        }
+        s->bit_rev[i]=0;
+        for (int b = 0; (1<<b) < n; b++)
+            if (i & (1<<b)) s->bit_rev[i] |= (n>>(b+1));
     }
-    /* Random signal */
     for (int i = 0; i < n; i++) {
-        s->real[i] = (double)rand() / RAND_MAX - 0.5;
-        s->imag[i] = 0.0;
+        s->real[i] = (double)rand()/RAND_MAX - 0.5; s->imag[i]=0.0;
     }
-    *state = s;
-    return 0;
+    *state = s; return 0;
 }
 
 static int fp_fft_warmup(void *state) {
     fp_fft_state_t *s = (fp_fft_state_t *)state;
-    /* Copy original signal */
-    double *r = malloc(FFT_N * sizeof(double));
-    double *im = malloc(FFT_N * sizeof(double));
-    memcpy(r, s->real, FFT_N * sizeof(double));
-    memset(im, 0, FFT_N * sizeof(double));
-    fft_radix2(r, im, FFT_N, s->twiddle_cos, s->twiddle_sin, s->bit_rev);
-    free(r); free(im);
+    memcpy(s->work_real, s->real, FFT_N*sizeof(double));
+    memset(s->work_imag, 0, FFT_N*sizeof(double));
+    fft_radix2(s->work_real, s->work_imag, FFT_N, s->twiddle_cos, s->twiddle_sin, s->bit_rev);
     return 0;
 }
 
@@ -94,53 +80,41 @@ static int fp_fft_measure(void *state, measurement_t *result) {
     struct timespec t0, t1;
     volatile double sink = 0.0;
 
+    /* Work buffers pre-allocated in init(), no heap alloc in timed section */
+    memcpy(s->work_real, s->real, FFT_N*sizeof(double));
+    memset(s->work_imag, 0, FFT_N*sizeof(double));
+
     clock_gettime(CLOCK_MONOTONIC, &t0);
-
-    double *r = malloc(FFT_N * sizeof(double));
-    double *im = calloc(FFT_N, sizeof(double));
-    memcpy(r, s->real, FFT_N * sizeof(double));
-    fft_radix2(r, im, FFT_N, s->twiddle_cos, s->twiddle_sin, s->bit_rev);
-
+    fft_radix2(s->work_real, s->work_imag, FFT_N, s->twiddle_cos, s->twiddle_sin, s->bit_rev);
     clock_gettime(CLOCK_MONOTONIC, &t1);
 
-    for (int i = 0; i < FFT_N; i++) {
-        sink += r[i] + im[i];
-    }
-    free(r); free(im);
+    for (int i = 0; i < FFT_N; i++) sink += s->work_real[i] + s->work_imag[i];
     __asm__ __volatile__("" : "+r"(sink));
 
-    double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
-    memset(result, 0, sizeof(*result));
-    result->primary_metric = FLOPS_PER_FFT / elapsed;
-    result->wall_seconds = elapsed;
+    double el = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec)/1e9;
+    memset(result,0,sizeof(*result));
+    result->primary_metric = FLOPS_PER_FFT / el;
+    result->wall_seconds = el;
     return 0;
 }
 
 static int fp_fft_cleanup(void *state) {
     fp_fft_state_t *s = (fp_fft_state_t *)state;
-    free(s->real); free(s->imag);
-    free(s->twiddle_cos); free(s->twiddle_sin); free(s->bit_rev);
-    free(s);
+    free(s->real); free(s->imag); free(s->twiddle_cos); free(s->twiddle_sin);
+    free(s->bit_rev); free(s->work_real); free(s->work_imag); free(s);
     return 0;
 }
 
 benchmark_t bench_fp_fft = {
-    .name = "fp-fft",
-    .category = "C2",
-    .description = "Radix-2 FFT N=2048 (Whetstone trig path modernized)",
-    .tier = 1,
-    .primary_metric_name = "FLOPS",
-    .higher_is_better = true,
-    .min_iterations = SSB_MIN_ITERATIONS,
-    .max_iterations = SSB_MAX_ITERATIONS,
-    .convergence_target = SSB_CONVERGENCE_TARGET,
-    .min_runtime_sec = SSB_MIN_RUNTIME_SEC,
-    .max_runtime_sec = SSB_MAX_RUNTIME_SEC,
-    .cooldown_required = true,
-    .init = fp_fft_init,
-    .warmup = fp_fft_warmup,
-    .measure = fp_fft_measure,
-    .cleanup = fp_fft_cleanup,
-    .num_threads = 1,
+    .name="fp-fft", .category="C2",
+    .description="Radix-2 FFT N=2048 (pre-allocated work buffers, no heap in timed path)",
+    .tier=1, .primary_metric_name="FLOPS", .higher_is_better=true,
+    .min_iterations=SSB_MIN_ITERATIONS, .max_iterations=SSB_MAX_ITERATIONS,
+    .convergence_target=SSB_CONVERGENCE_TARGET,
+    .min_runtime_sec=SSB_MIN_RUNTIME_SEC, .max_runtime_sec=SSB_MAX_RUNTIME_SEC,
+    .cooldown_required=true,
+    .init=fp_fft_init, .warmup=fp_fft_warmup,
+    .measure=fp_fft_measure, .cleanup=fp_fft_cleanup,
+    .num_threads=1,
 };
 SSB_BENCHMARK_REGISTER(bench_fp_fft);

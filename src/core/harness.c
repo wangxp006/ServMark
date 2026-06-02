@@ -178,27 +178,19 @@ static int harness_run_parallel(const benchmark_t *bench, run_mode_t mode,
             /* Pin to specific physical core (skip HT siblings) */
             cpu_set_t cpuset;
             CPU_ZERO(&cpuset);
-            /* Use physical core mapping if available, else fall back to sequential */
+            /* Use physical core mapping if available, else fall back to sequential.
+             * Discover physical cores once and apply SMT-aware pinning to ALL children. */
             int pin_cpu = i;
-            if (i == 0) {
-                /* Discover physical cores once (cached in static for first call) */
-                static int *phys_map = NULL;
-                static int num_phys = 0;
-                if (!phys_map) {
-                    phys_map = harness_get_physical_cores(&num_phys);
-                }
-                if (phys_map && num_phys > 0) {
-                    /* Map instance i to physical core i, skipping HT siblings */
-                    int found = 0;
-                    for (int c = 0; c < (int)sysconf(_SC_NPROCESSORS_ONLN) && found <= i; c++) {
-                        if (phys_map[c] == i) { pin_cpu = c; break; }
-                    }
-                    /* If i >= num_phys, wrap to physical core (i % num_phys) */
-                    if (i >= num_phys) {
-                        for (int c = 0; c < (int)sysconf(_SC_NPROCESSORS_ONLN); c++) {
-                            if (phys_map[c] == (i % num_phys)) { pin_cpu = c; break; }
-                        }
-                    }
+            static int *phys_map = NULL;
+            static int num_phys = 0;
+            if (!phys_map) {
+                phys_map = harness_get_physical_cores(&num_phys);
+            }
+            if (phys_map && num_phys > 0) {
+                /* Map instance i to physical core, wrapping if i >= num_phys */
+                int phys_id = i % num_phys;
+                for (int c = 0; c < (int)sysconf(_SC_NPROCESSORS_ONLN); c++) {
+                    if (phys_map[c] == phys_id) { pin_cpu = c; break; }
                 }
             }
             CPU_SET(pin_cpu, &cpuset);
