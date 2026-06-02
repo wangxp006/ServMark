@@ -14,36 +14,29 @@
 /*
  * Futex-based context switching benchmark.
  *
- * Two threads ping-pong via futex wait/wake. The correct handoff protocol:
- *   Thread A: futex_word = 1; FUTEX_WAKE; FUTEX_WAIT(&futex_word, 1)
- *             (waits until futex_word != 1 — B sets it back to 0)
- *   Thread B: FUTEX_WAIT(&futex_word, 0)
- *             (waits until futex_word != 0 — A sets it to 1)
- *             futex_word = 0; FUTEX_WAKE
- *             (resets to 0 so A's next WAIT(1) will see futex_word==1 and sleep)
+ * Two threads ping-pong via futex wait/wake. Correct handoff protocol:
+ * each side toggles futex_word so the other side actually sleeps.
  *
- * Each side toggles futex_word to the value the other side waits for,
- * ensuring both threads actually sleep on every iteration.
+ * Futex syscalls provide full kernel-side memory barriers, so we use
+ * relaxed ordering for futex_word stores — the syscall itself orders.
+ * Counter uses relaxed: no cross-thread ordering needed, only counts.
  */
 
 typedef struct {
     _Atomic int futex_word;
     _Atomic int ready;
-    _Atomic int done;
     _Atomic int64_t switches;
     pthread_t thread;
 } cswitch_futex_state_t;
 
 static void *futex_thread(void *arg) {
     cswitch_futex_state_t *s = (cswitch_futex_state_t *)arg;
-    atomic_store(&s->ready, 1);
+    atomic_store_explicit(&s->ready, 1, memory_order_release);
     for (int i = 0; i < SWITCHES / 2; i++) {
-        /* Wait until main thread sets futex_word to 1 and wakes us */
         syscall(SYS_futex, &s->futex_word, FUTEX_WAIT, 0, NULL, NULL, 0);
-        /* Signal main: reset futex_word to 0 so main's WAIT(1) will sleep */
-        atomic_store(&s->futex_word, 0);
+        atomic_store_explicit(&s->futex_word, 0, memory_order_relaxed);
         syscall(SYS_futex, &s->futex_word, FUTEX_WAKE, 1, NULL, NULL, 0);
-        atomic_fetch_add(&s->switches, 2);
+        atomic_fetch_add_explicit(&s->switches, 2, memory_order_relaxed);
     }
     return NULL;
 }
@@ -58,8 +51,7 @@ static int cswitch_futex_init(void **state) {
 
 static int cswitch_futex_warmup(void *state) {
     cswitch_futex_state_t *s = (cswitch_futex_state_t *)state;
-    /* Exercise the futex fast path — warmup without a second thread */
-    atomic_store(&s->futex_word, 1);
+    atomic_store_explicit(&s->futex_word, 1, memory_order_relaxed);
     syscall(SYS_futex, &s->futex_word, FUTEX_WAKE, 1, NULL, NULL, 0);
     return 0;
 }
@@ -69,10 +61,9 @@ static int cswitch_futex_measure(void *state, measurement_t *result) {
     struct timespec t0, t1;
     int ret;
 
-    atomic_store(&s->ready, 0);
-    atomic_store(&s->done, 0);
-    atomic_store(&s->switches, 0);
-    atomic_store(&s->futex_word, 0);
+    atomic_store_explicit(&s->ready, 0, memory_order_relaxed);
+    atomic_store_explicit(&s->switches, 0, memory_order_relaxed);
+    atomic_store_explicit(&s->futex_word, 0, memory_order_relaxed);
 
     ret = pthread_create(&s->thread, NULL, futex_thread, s);
     if (ret != 0) {
@@ -80,17 +71,14 @@ static int cswitch_futex_measure(void *state, measurement_t *result) {
         return -1;
     }
 
-    /* Spin until the worker thread signals it is ready */
-    while (!atomic_load(&s->ready))
+    while (!atomic_load_explicit(&s->ready, memory_order_acquire))
         ;
 
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
     for (int i = 0; i < SWITCHES / 2; i++) {
-        /* Signal worker: set futex_word to 1, then wake */
-        atomic_store(&s->futex_word, 1);
+        atomic_store_explicit(&s->futex_word, 1, memory_order_relaxed);
         syscall(SYS_futex, &s->futex_word, FUTEX_WAKE, 1, NULL, NULL, 0);
-        /* Wait until worker sets futex_word back to 0 */
         syscall(SYS_futex, &s->futex_word, FUTEX_WAIT, 1, NULL, NULL, 0);
     }
 
@@ -100,7 +88,7 @@ static int cswitch_futex_measure(void *state, measurement_t *result) {
 
     double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
     memset(result, 0, sizeof(*result));
-    result->primary_metric = (double)atomic_load(&s->switches) / elapsed;
+    result->primary_metric = (double)atomic_load_explicit(&s->switches, memory_order_relaxed) / elapsed;
     result->wall_seconds = elapsed;
     return 0;
 }
@@ -114,19 +102,13 @@ benchmark_t bench_cswitch_futex = {
     .name = "cswitch-futex",
     .category = "C8",
     .description = "Futex-based context switching (futex wait/wake ping-pong)",
-    .tier = 1,
-    .primary_metric_name = "switches/sec",
-    .higher_is_better = true,
-    .min_iterations = SSB_MIN_ITERATIONS,
-    .max_iterations = SSB_MAX_ITERATIONS,
+    .tier = 1, .primary_metric_name = "switches/sec", .higher_is_better = true,
+    .min_iterations = SSB_MIN_ITERATIONS, .max_iterations = SSB_MAX_ITERATIONS,
     .convergence_target = SSB_CONVERGENCE_TARGET,
-    .min_runtime_sec = SSB_MIN_RUNTIME_SEC,
-    .max_runtime_sec = SSB_MAX_RUNTIME_SEC,
+    .min_runtime_sec = SSB_MIN_RUNTIME_SEC, .max_runtime_sec = SSB_MAX_RUNTIME_SEC,
     .cooldown_required = false,
-    .init = cswitch_futex_init,
-    .warmup = cswitch_futex_warmup,
-    .measure = cswitch_futex_measure,
-    .cleanup = cswitch_futex_cleanup,
+    .init = cswitch_futex_init, .warmup = cswitch_futex_warmup,
+    .measure = cswitch_futex_measure, .cleanup = cswitch_futex_cleanup,
     .num_threads = NUM_THREADS,
 };
 SSB_BENCHMARK_REGISTER(bench_cswitch_futex);

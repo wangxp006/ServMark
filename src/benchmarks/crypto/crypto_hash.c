@@ -106,7 +106,7 @@ static int crypto_hash_cleanup(void *state) {
 benchmark_t bench_crypto_hash = {
     .name = "crypto-hash",
     .category = "C3",
-    .description = "SHA-256 hash throughput (256MB single-buffer, may be DRAM-bound)",
+    .description = "SHA-256 hash 256MB (HW: SHA-NI x86, ARMv8 Crypto ARM64, SW RISC-V. May be DRAM-bound)",
     .tier = 1,
     .primary_metric_name = "bytes/sec",
     .higher_is_better = true,

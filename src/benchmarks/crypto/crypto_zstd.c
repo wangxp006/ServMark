@@ -112,7 +112,7 @@ static int crypto_zstd_cleanup(void *state) {
 benchmark_t bench_crypto_zstd = {
     .name = "crypto-zstd",
     .category = "C3",
-    .description = "zstd compress level 3 throughput (in-cache, 64MB dataset)",
+    .description = "zstd compress level 3 (in-cache 64MB. HW CRC32 on x86/ARM64, SW on RISC-V)",
     .tier = 1,
     .primary_metric_name = "bytes/sec",
     .higher_is_better = true,

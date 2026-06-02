@@ -8,15 +8,14 @@
 #define DETECT_ITERS 1000000
 
 /*
- * VM detection + virtualization overhead benchmark (ARCH-NEUTRAL).
+ * VM detection + hypervisor identification benchmark (ARCH-NEUTRAL).
  *
- * Measures vDSO clock_gettime(CLOCK_MONOTONIC) latency on ALL architectures.
- * vDSO is a pure userspace call on modern kernels for every ISA:
- *   x86:   rdtsc + vvar arithmetic
- *   ARM64: mrs CNTVCT_EL0 + vvar arithmetic
- *   RISC-V: rdtime CSR + vvar arithmetic
+ * Measures the cost of calling detect_hypervisor() which probes DMI
+ * sysfs on ALL architectures, plus CPUID fallback on x86.
  *
- * Hypervisor detection uses DMI sysfs first (portable), CPUID fallback (x86).
+ * This is distinct from syscall-vdso (which measures pure vDSO
+ * clock_gettime latency) — vm-detect measures the actual cost of
+ * determining whether we run on bare metal or under a hypervisor.
  */
 
 #if defined(__x86_64__) || defined(__i386__)
@@ -65,18 +64,27 @@ static int vm_detect_warmup(void *state) {
 
 static int vm_detect_measure(void *state, measurement_t *result) {
     (void)state;
-    struct timespec t0, t1, ts;
-    volatile int64_t sink = 0;
+    struct timespec t0, t1;
+    volatile const char *hv_result = NULL;
+
     clock_gettime(CLOCK_MONOTONIC, &t0);
+
     for (int i = 0; i < DETECT_ITERS; i++) {
-        clock_gettime(CLOCK_MONOTONIC, &ts);
-        sink += ts.tv_nsec;
+        /*
+         * On first invocation (or first few), detect_hypervisor() hits
+         * the sysfs dentry cache. Subsequent calls may still access the
+         * VFS layer. This measures the cost of the full detection path
+         * — distinct from pure vDSO syscall-vdso benchmark.
+         */
+        hv_result = detect_hypervisor();
     }
+
     clock_gettime(CLOCK_MONOTONIC, &t1);
-    __asm__ __volatile__("" : "+r"(sink));
+    __asm__ __volatile__("" : "+r"(hv_result));
+
     double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec)/1e9;
     memset(result, 0, sizeof(*result));
-    result->primary_metric = elapsed * 1e9 / DETECT_ITERS;
+    result->primary_metric = elapsed * 1e9 / DETECT_ITERS; /* ns/call */
     result->wall_seconds = elapsed;
     return 0;
 }
@@ -85,7 +93,7 @@ static int vm_detect_cleanup(void *state) { free(state); return 0; }
 
 benchmark_t bench_vm_detect = {
     .name = "vm-detect", .category = "C14",
-    .description = "VM detection + vDSO clock_gettime cost (arch-neutral, ns/call)",
+    .description = "VM detection cost (DMI sysfs + CPUID, distinct from vDSO syscall-vdso)",
     .tier = 1, .primary_metric_name = "ns/call", .higher_is_better = false,
     .min_iterations = SSB_MIN_ITERATIONS, .max_iterations = SSB_MAX_ITERATIONS,
     .convergence_target = SSB_CONVERGENCE_TARGET,

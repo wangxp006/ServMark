@@ -8,19 +8,18 @@
 #define NUM_CALLS 10000000
 
 /*
- * vDSO clock_gettime benchmark.
+ * vDSO clock_gettime benchmark (C12 System Call overhead category).
  *
  * clock_gettime(CLOCK_MONOTONIC) executes entirely in userspace via
- * the vDSO (__vdso_clock_gettime): rdtsc + vvar page arithmetic.
- * Typical latency: ~15-25ns on modern x86 — no kernel entry at all.
+ * the vDSO on all modern kernels:
+ *   x86:   rdtsc + vvar arithmetic (~15-25ns)
+ *   ARM64: CNTVCT_EL0 + vvar arithmetic (~15-25ns)
+ *   RISC-V: rdtime CSR + vvar arithmetic (~15-25ns)
  *
- * The ratio between syscall_getpid.c (ns/call, syscall path ~100-150ns)
- * and this benchmark (calls/sec, vDSO path ~15-25ns) is a useful metric
- * for quantifying kernel entry/exit overhead.
- *
- * NOTE: This benchmark reports calls/sec (higher_is_better = true), while
- * syscall_getpid.c reports ns/call (higher_is_better = false). Convert
- * between them by: q calls/sec → 1e9/q ns/call.
+ * Reports ns/call to match syscall_getpid.c units within C12.
+ * syscall_getpid.c measures true syscall overhead (~100-150ns);
+ * this benchmark measures the vDSO userspace fast path.
+ * Ratio (syscall_getpid / vdso) ≈ true kernel entry/exit overhead.
  */
 
 typedef struct {
@@ -52,8 +51,6 @@ static int syscall_vdso_measure(void *state, measurement_t *result) {
 
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
-    /* vDSO clock_gettime — pure userspace fast path on modern kernels.
-     * rdtsc + vvar page multiply/shift, no kernel entry. */
     for (int i = 0; i < NUM_CALLS; i++) {
         clock_gettime(CLOCK_MONOTONIC, &ts);
         sink += ts.tv_nsec;
@@ -62,11 +59,12 @@ static int syscall_vdso_measure(void *state, measurement_t *result) {
     clock_gettime(CLOCK_MONOTONIC, &t1);
 
     __asm__ __volatile__("" : "+r"(sink));
-    s->sink = sink; /* persist sink to prevent DCE across iterations */
+    s->sink = sink;
 
     double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
     memset(result, 0, sizeof(*result));
-    result->primary_metric = (double)NUM_CALLS / elapsed; /* calls/sec */
+    /* ns/call — matches syscall_getpid.c units within C12 category */
+    result->primary_metric = elapsed * 1e9 / NUM_CALLS; /* ns/call */
     result->wall_seconds = elapsed;
     return 0;
 }
@@ -79,10 +77,10 @@ static int syscall_vdso_cleanup(void *state) {
 benchmark_t bench_syscall_vdso = {
     .name = "syscall-vdso",
     .category = "C12",
-    .description = "vDSO clock_gettime (userspace fast path, calls/sec — cf. syscall-getpid ns/call)",
+    .description = "vDSO clock_gettime (userspace fast path, ns/call — matches syscall-getpid units)",
     .tier = 1,
-    .primary_metric_name = "calls/sec",
-    .higher_is_better = true,
+    .primary_metric_name = "ns/call",
+    .higher_is_better = false,  /* latency: lower is better, matches syscall-getpid */
     .min_iterations = SSB_MIN_ITERATIONS,
     .max_iterations = SSB_MAX_ITERATIONS,
     .convergence_target = SSB_CONVERGENCE_TARGET,

@@ -28,18 +28,18 @@ typedef struct {
 static void *ping_thread(void *arg) {
     cswitch_pipe_state_t *s = (cswitch_pipe_state_t *)arg;
     char c = 'x';
-    atomic_store(&s->thread_ready, true);
+    atomic_store_explicit(&s->thread_ready, true, memory_order_release);
 
     for (int i = 0; i < SWITCHES_PER_ITER / 2; i++) {
         if (write(s->pipe_fd[1], &c, 1) != 1) {
-            atomic_store(&s->thread_failed, true);
+            atomic_store_explicit(&s->thread_failed, true, memory_order_relaxed);
             break;
         }
         if (read(s->pipe_fd[0], &c, 1) != 1) {
-            atomic_store(&s->thread_failed, true);
+            atomic_store_explicit(&s->thread_failed, true, memory_order_relaxed);
             break;
         }
-        atomic_fetch_add(&s->switch_count, 2);
+        atomic_fetch_add_explicit(&s->switch_count, 2, memory_order_relaxed);
     }
     return NULL;
 }

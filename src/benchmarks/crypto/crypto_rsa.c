@@ -130,7 +130,7 @@ static int crypto_rsa_cleanup(void *state) {
 benchmark_t bench_crypto_rsa = {
     .name = "crypto-rsa",
     .category = "C3",
-    .description = "RSA-2048 SHA-256 signature throughput (PKCS#1 v1.5 padding)",
+    .description = "RSA-2048 SHA-256 sign throughput (PKCS#1 v1.5. HW-accel on x86/ARM64, SW on RISC-V)",
     .tier = 1,
     .primary_metric_name = "signatures/sec",
     .higher_is_better = true,

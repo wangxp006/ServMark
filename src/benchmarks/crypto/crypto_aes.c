@@ -145,7 +145,7 @@ static int crypto_aes_cleanup(void *state) {
 benchmark_t bench_crypto_aes = {
     .name = "crypto-aes",
     .category = "C3",
-    .description = "AES-256-GCM encrypt throughput (Init+Update+Final+GetTag per 64KB chunk)",
+    .description = "AES-256-GCM encrypt throughput (HW-accel: AES-NI x86, ARMv8 Crypto ARM64, SW-only RISC-V)",
     .tier = 1,
     .primary_metric_name = "bytes/sec",
     .higher_is_better = true,
