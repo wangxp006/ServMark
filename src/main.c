@@ -17,17 +17,25 @@ static void print_usage(const char *prog) {
     printf("ServMark %s\n", SSB_VERSION);
     printf("Usage: %s [options]\n", prog);
     printf("Options:\n");
-    printf("  --config <file>          Config file (default: config/default.cfg)\n");
-    printf("  --mode <peak|sustained>  Run mode (default: peak)\n");
-    printf("  --validate               Run system validation only\n");
-    printf("  --tier <1|2|3>           Run specific tier only (default: 1)\n");
-    printf("  --category <C1..C15>     Run specific category only\n");
-    printf("  --threads <N>            Run N parallel instances (one per core)\n");
-    printf("  --mitigations-off        Run with mitigations=off reference\n");
-    printf("  --output-dir <dir>       Output directory (default: .)\n");
-    printf("  --reference <file>       Frozen reference file path\n");
-    printf("  --dry-run                List benchmarks without running\n");
-    printf("  --help                   Show this help\n");
+    printf("  --config <file>           Config file (default: config/default.cfg)\n");
+    printf("  --mode <peak|sustained>   Run mode (default: peak)\n");
+    printf("  --validate                Run system validation only\n");
+    printf("  --tier <1|2|3>            Run specific tier only (default: 1)\n");
+    printf("  --category <C1..C15>      Run specific category only\n");
+    printf("  --benchmark <name>        Run specific benchmark by name\n");
+    printf("  --threads <N>             Run N parallel instances (default: auto)\n");
+    printf("  --mitigations-off         Run with mitigations=off reference\n");
+    printf("  --output-dir <dir>        Output directory (default: .)\n");
+    printf("  --reference <file>        Frozen reference file path\n");
+    printf("  --dry-run                 List benchmarks without running\n");
+    printf("  --list-categories         List categories and exit\n");
+    printf("  --min-iterations <N>      Override min iterations (default: 5)\n");
+    printf("  --max-iterations <N>      Override max iterations (default: 31)\n");
+    printf("  --convergence <F>         Override convergence SEM/mean target\n");
+    printf("  --max-runtime <sec>       Override max runtime per benchmark\n");
+    printf("  --cooldown <sec>          Override cooldown between benchmarks\n");
+    printf("  --version                 Print version and exit\n");
+    printf("  --help                    Show this help\n");
 }
 
 static char *trim(char *s) {
@@ -75,16 +83,23 @@ static int parse_config(const char *path, run_config_t *cfg, char ***bench_filte
             if (value[0]) cfg->category_filter = strdup(value);
         } else if (strcmp(key, "mitigations_off") == 0) {
             cfg->mitigations_off = (atoi(value) != 0);
-        } else if (strcmp(key, "reportable") == 0 ||
-                   strcmp(key, "convergence") == 0 ||
-                   strcmp(key, "max_runtime") == 0 ||
-                   strcmp(key, "min_iterations") == 0 ||
-                   strcmp(key, "max_iterations") == 0 ||
-                   strcmp(key, "cooldown_sec") == 0 ||
-                   strcmp(key, "march_native") == 0 ||
-                   strcmp(key, "isa_baseline") == 0 ||
-                   strcmp(key, "require_validate") == 0) {
-            fprintf(stderr, "Warning: %s:%d: key '%s' is not yet implemented, ignoring\n",
+        } else if (strcmp(key, "min_iterations") == 0) {
+            cfg->min_iterations = atoi(value);
+        } else if (strcmp(key, "max_iterations") == 0) {
+            cfg->max_iterations = atoi(value);
+        } else if (strcmp(key, "convergence") == 0) {
+            cfg->convergence_target = atof(value);
+        } else if (strcmp(key, "max_runtime") == 0) {
+            cfg->max_runtime_sec = atoi(value);
+        } else if (strcmp(key, "cooldown_sec") == 0) {
+            cfg->cooldown_sec = atoi(value);
+        } else if (strcmp(key, "reportable") == 0) {
+            cfg->reportable = (atoi(value) != 0);
+        } else if (strcmp(key, "require_validate") == 0) {
+            cfg->require_validate = (atoi(value) != 0);
+        } else if (strcmp(key, "march_native") == 0 ||
+                   strcmp(key, "isa_baseline") == 0) {
+            fprintf(stderr, "Warning: %s:%d: key '%s' is build-time only, set via cmake -DSSB_USE_MARCH_NATIVE=ON\n",
                     path, lineno, key);
         } else if (strcmp(key, "benchmark") == 0) {
             /* Format: benchmark = C1 : name : description
@@ -143,20 +158,41 @@ int main(int argc, char *argv[]) {
         {"validate", no_argument, 0, 'v'},
         {"tier", required_argument, 0, 't'},
         {"category", required_argument, 0, 'c'},
+        {"benchmark", required_argument, 0, 'b'},
         {"threads", required_argument, 0, 'T'},
         {"mitigations-off", no_argument, 0, 'x'},
         {"output-dir", required_argument, 0, 'o'},
         {"reference", required_argument, 0, 'r'},
         {"dry-run", no_argument, 0, 'n'},
+        {"list-categories", no_argument, 0, 'L'},
+        {"min-iterations", required_argument, 0, 'i'},
+        {"max-iterations", required_argument, 0, 'I'},
+        {"convergence", required_argument, 0, 'g'},
+        {"max-runtime", required_argument, 0, 'R'},
+        {"cooldown", required_argument, 0, 'd'},
+        {"version", no_argument, 0, 'V'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
     };
+
+    /* Pre-scan argv for --config so we load the right config BEFORE getopt */
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
+            config_path = argv[i + 1]; break;
+        }
+        if (strncmp(argv[i], "--config=", 9) == 0) {
+            config_path = argv[i] + 9; break;
+        }
+        if (strcmp(argv[i], "-C") == 0 && i + 1 < argc) {
+            config_path = argv[i + 1]; break;
+        }
+    }
 
     /* Parse config file first — CLI args will override */
     parse_config(config_path, &config, &bench_filter, &bench_filter_count);
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "C:m:vt:c:T:xo:r:nh", long_opts, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "C:m:vt:c:b:T:xo:r:nLi:I:g:R:d:Vh", long_opts, NULL)) != -1) {
         switch (opt) {
         case 'C': config_path = optarg; break;
         case 'm':
@@ -168,11 +204,34 @@ int main(int argc, char *argv[]) {
             config.tier_mask = 1 << atoi(optarg);
             break;
         case 'c': config.category_filter = optarg; break;
+        case 'b':
+            if (bench_filter_count < MAX_BENCH_FILTER) {
+                bench_filter[bench_filter_count] = strdup(optarg);
+                bench_filter_count++;
+            }
+            break;
         case 'T': config.num_instances = atoi(optarg); break;
         case 'x': config.mitigations_off = true; break;
         case 'o': config.output_dir = optarg; break;
         case 'r': config.reference_file = optarg; break;
         case 'n': config.dry_run = true; break;
+        case 'L': {
+            int ncat;
+            const category_weight_t *cats = scoring_get_categories(&ncat);
+            printf("Categories (%d):\n", ncat);
+            printf("  %-6s %-30s %8s\n", "ID", "Name", "Weight");
+            printf("  ------ ------------------------------ --------\n");
+            for (int ci = 0; ci < ncat; ci++)
+                printf("  %-6s %-30s %7.0f%%\n",
+                       cats[ci].id, cats[ci].name, cats[ci].weight * 100.0);
+            free(bench_filter); return 0;
+        }
+        case 'i': config.min_iterations = atoi(optarg); break;
+        case 'I': config.max_iterations = atoi(optarg); break;
+        case 'g': config.convergence_target = atof(optarg); break;
+        case 'R': config.max_runtime_sec = atoi(optarg); break;
+        case 'd': config.cooldown_sec = atoi(optarg); break;
+        case 'V': printf("ServMark %s\n", SSB_VERSION); free(bench_filter); return 0;
         case 'h': print_usage(argv[0]); free(bench_filter); return 0;
         default: print_usage(argv[0]); free(bench_filter); return 1;
         }
@@ -182,8 +241,25 @@ int main(int argc, char *argv[]) {
     if (config.num_instances <= 0)
         config.num_instances = SSB_NUM_CPUS();
 
+    /* Warn on high instance count on large servers */
+    if (config.num_instances > 64)
+        fprintf(stderr, "Warning: %d parallel instances on a %d-CPU system"
+                " may cause memory pressure\n",
+                config.num_instances, config.num_instances);
+
     config.bench_filter = bench_filter;
     config.bench_filter_count = bench_filter_count;
+
+    /* Auto-create output directory if it doesn't exist */
+    {   char mkdir_cmd[512];
+        snprintf(mkdir_cmd, sizeof(mkdir_cmd), "mkdir -p %s", config.output_dir);
+        system(mkdir_cmd);
+    }
+
+    if (config.require_validate) {
+        printf("Pre-flight validation (require_validate=1):\n");
+        validate_system(stdout);
+    }
 
     if (validate_only) {
         validate_system(stdout);

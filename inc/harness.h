@@ -14,6 +14,15 @@ typedef struct {
     int num_instances;
     char **bench_filter;
     int bench_filter_count;
+    /* Per-benchmark overrides (0 = use benchmark default) */
+    int min_iterations;
+    int max_iterations;
+    double convergence_target;
+    int min_runtime_sec;
+    int max_runtime_sec;
+    int cooldown_sec;
+    bool reportable;         /* skip benchmarks with CV >= 10% */
+    bool require_validate;   /* auto-run --validate before benchmark run */
 } run_config_t;
 
 typedef struct {
@@ -37,6 +46,7 @@ struct run_result_s {
 };
 
 int harness_run(const run_config_t *config, run_result_t **result);
-int harness_run_single(const benchmark_t *bench, run_mode_t mode, benchmark_stats_t *stats);
+int harness_run_single(const benchmark_t *bench, run_mode_t mode, benchmark_stats_t *stats,
+                       const run_config_t *overrides);
 void harness_free_result(run_result_t *result);
 #endif

@@ -89,10 +89,20 @@ static int run_benchmark_instance(const benchmark_t *bench, double *values_out, 
 }
 
 int harness_run_single(const benchmark_t *bench, run_mode_t mode,
-        benchmark_stats_t *stats) {
+        benchmark_stats_t *stats, const run_config_t *overrides) {
+    (void)mode;
     double values[SSB_MAX_ITERATIONS];
     int iter;
     int ret = run_benchmark_instance(bench, values, &iter);
+
+    /* Apply config overrides: clamp iterations to configured min/max */
+    if (ret == 0 && overrides) {
+        if (overrides->max_iterations > 0 && iter > overrides->max_iterations)
+            iter = overrides->max_iterations;
+        if (overrides->min_iterations > 0 && iter < overrides->min_iterations)
+            iter = overrides->min_iterations;
+    }
+
     if (ret != 0) return ret;
     stats_compute(values, iter, stats);
     return 0;
@@ -325,14 +335,14 @@ int harness_run(const run_config_t *config, run_result_t **result_out) {
         if (n > 1 && b->num_threads == 1)
             ret = harness_run_parallel(b, config->mode, n, &sr->stats);
         else
-            ret = harness_run_single(b, config->mode, &sr->stats);
+            ret = harness_run_single(b, config->mode, &sr->stats, config);
 
         sr->status = (ret == 0) ? "completed" : "failed";
         result->subtest_count++;
 
         /* Cooldown between benchmarks in peak mode */
         if (config->mode == SSB_MODE_PEAK && b->cooldown_required) {
-            int cooldown = SSB_COOLDOWN_SEC;
+            int cooldown = config->cooldown_sec > 0 ? config->cooldown_sec : SSB_COOLDOWN_SEC;
             if (cooldown > 0) {
                 sleep(cooldown);
             }
@@ -344,6 +354,13 @@ int harness_run(const run_config_t *config, run_result_t **result_out) {
      * should be called instead. */
     for (int i = 0; i < result->subtest_count; i++) {
         subtest_result_t *sr = &result->subtests[i];
+
+        /* Reportable filter: skip high-CV benchmarks from scoring */
+        if (config->reportable && sr->stats.cv >= SSB_CV_HIGH) {
+            sr->normalized_score = 0.0;
+            continue;
+        }
+
         sr->normalized_score = sr->stats.mean;
         /* Invert latency metrics so higher is always better for scoring */
         if (sr->bench && !sr->bench->higher_is_better && sr->stats.mean > 0) {
