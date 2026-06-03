@@ -47,9 +47,10 @@ static int ipc_unix_measure(void *state, measurement_t *result) {
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
     for (int i = 0; i < NUM_MSGS; i++) {
-        send(s->fds[0], s->buffer, MSG_SIZE, 0);
-        recv(s->fds[1], s->buffer, MSG_SIZE, 0);
-        total_bytes += MSG_SIZE * 2;
+        ssize_t ns = send(s->fds[0], s->buffer, MSG_SIZE, 0);
+        ssize_t nr = recv(s->fds[1], s->buffer, MSG_SIZE, MSG_WAITALL);
+        if (ns == MSG_SIZE && nr == MSG_SIZE)
+            total_bytes += MSG_SIZE * 2;
     }
 
     clock_gettime(CLOCK_MONOTONIC, &t1);

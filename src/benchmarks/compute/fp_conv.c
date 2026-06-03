@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <math.h>
 
 #define H 128
 #define W 128
@@ -68,6 +69,14 @@ static int fp_conv_measure(void *state, measurement_t *result) {
     clock_gettime(CLOCK_MONOTONIC, &t1);
     __asm__ __volatile__("" : "+r"(sink));
 
+    /* Verify a single output element to confirm correct computation */
+    {   float verify = 0.0f;
+        for (int ky=0; ky<K; ky++) for (int kx=0; kx<K; kx++)
+            verify += s->input[(0+ky)*W+(0+kx)] * s->kernel[ky*K+kx];
+        if (fabsf(s->output[0] - verify) > 1e-6f * fabsf(verify))
+            return -1;
+        __asm__ __volatile__("" :: "r"(verify)); }
+
     double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
     memset(result, 0, sizeof(*result));
     result->primary_metric = 100.0 * FLOP_PER_CONV / elapsed;
@@ -84,7 +93,7 @@ static int fp_conv_cleanup(void *state) {
 benchmark_t bench_fp_conv = {
     .name = "fp-conv",
     .category = "C2",
-    .description = "3x3 convolution 128x128 (Whetstone vectorized modernized)",
+    .description = "3x3 convolution 128x128 (output-verified, Whetstone modernized)",
     .tier = 1,
     .primary_metric_name = "FLOPS",
     .higher_is_better = true,

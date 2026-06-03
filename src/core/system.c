@@ -346,7 +346,10 @@ int system_probe(system_info_t **info_out) {
             }
         }
     }
-    /* Last resort: hard-coded defaults if all probes failed */
+    /* Last resort: hard-coded defaults if all probes failed.
+     * These are conservative underestimates (L1=32KB, L2=1MB, L3=32MB).
+     * Modern server CPUs typically have much larger caches (L1=64KB, L2=2MB, L3=128MB+).
+     * Update these values if the target hardware is known to differ. */
     if (info->cache_level_count == 0) {
         info->cache_level_count = 3;
         info->caches = calloc(3, sizeof(cache_info_t));

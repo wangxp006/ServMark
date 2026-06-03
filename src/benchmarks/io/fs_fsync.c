@@ -32,7 +32,7 @@ static int fs_fsync_warmup(void *state) {
     int fd = open(s->file_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd >= 0) {
         write(fd, s->buffer, WRITE_SIZE);
-        fsync(fd);
+        fdatasync(fd);
         close(fd);
     }
     return 0;
@@ -50,7 +50,7 @@ static int fs_fsync_measure(void *state, measurement_t *result) {
     for (int i = 0; i < NUM_FSYNCS; i++) {
         lseek(fd, 0, SEEK_SET);
         write(fd, s->buffer, WRITE_SIZE);
-        fsync(fd);
+        fdatasync(fd);
     }
 
     clock_gettime(CLOCK_MONOTONIC, &t1);
@@ -73,7 +73,7 @@ static int fs_fsync_cleanup(void *state) {
 benchmark_t bench_fs_fsync = {
     .name = "fs-fsync",
     .category = "C10",
-    .description = "fsync latency (128KB write + fsync)",
+    .description = "fdatasync latency (128KB write + fdatasync, no metadata flush)",
     .tier = 1,
     .primary_metric_name = "us/fsync",
     .higher_is_better = false,

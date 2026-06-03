@@ -69,6 +69,13 @@ static int int_parse_measure(void *state, measurement_t *result) {
         s->results[i] = parse_int_fast(&p);
         sink ^= s->results[i];
     }
+    /* Verify: re-parse first 10 items and compare */
+    {   const char *vp = s->buffer;
+        for (int i = 0; i < 10 && i < PARSE_ITEMS; i++) {
+            int64_t v2 = parse_int_fast(&vp);
+            if (v2 != s->results[i]) { sink = -1; break; }
+        }
+    }
 
     clock_gettime(CLOCK_MONOTONIC, &t1);
     __asm__ __volatile__("" : "+r"(sink));

@@ -66,7 +66,7 @@ static int ipc_eventfd_cleanup(void *state) {
 benchmark_t bench_ipc_eventfd = {
     .name = "ipc-eventfd",
     .category = "C11",
-    .description = "eventfd write/read roundtrip throughput",
+    .description = "eventfd write/read roundtrip (single-process, no cross-process IPC)",
     .tier = 1,
     .primary_metric_name = "roundtrips/sec",
     .higher_is_better = true,

@@ -79,6 +79,8 @@ static int int_regex_measure(void *state, measurement_t *result) {
     for (int i = 0; i < PATTERN_COUNT; i++) {
         sink += simple_match(s->haystack, LOG_SIZE, s->patterns[i], s->pattern_lens[i]);
     }
+    /* Verify match count is non-zero (synthetic log has known IDs) */
+    if (sink == 0) return -1;
 
     clock_gettime(CLOCK_MONOTONIC, &t1);
     __asm__ __volatile__("" : "+r"(sink));

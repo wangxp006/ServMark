@@ -25,7 +25,7 @@ static int ctr_lifecycle_warmup(void *state) {
     volatile int sink = 0;
     for (int i = 0; i < 20; i++) {
         pid_t pid = clone(child_func, s->stack + 65536,
-                          SIGCHLD | CLONE_NEWNS | CLONE_NEWUTS | CLONE_NEWNET, NULL);
+                          SIGCHLD | CLONE_NEWNS | CLONE_NEWUTS | CLONE_NEWNET | CLONE_NEWPID, NULL);
         if (pid >= 0) { int st; waitpid(pid, &st, 0); if(WIFEXITED(st)) sink+=WEXITSTATUS(st); }
     }
     __asm__ __volatile__("":"+r"(sink)); return 0;
@@ -38,7 +38,7 @@ static int ctr_lifecycle_measure(void *state, measurement_t *result) {
     clock_gettime(CLOCK_MONOTONIC, &t0);
     for (int i = 0; i < CLONE_ITERS; i++) {
         pid_t pid = clone(child_func, s->stack + 65536,
-                          SIGCHLD | CLONE_NEWNS | CLONE_NEWUTS | CLONE_NEWNET, NULL);
+                          SIGCHLD | CLONE_NEWNS | CLONE_NEWUTS | CLONE_NEWNET | CLONE_NEWPID, NULL);
         if (pid >= 0) { int st; waitpid(pid, &st, 0); total++; }
     }
     clock_gettime(CLOCK_MONOTONIC, &t1);
@@ -56,7 +56,7 @@ static int ctr_lifecycle_cleanup(void *state) {
 
 benchmark_t bench_ctr_lifecycle = {
     .name = "ctr-lifecycle", .category = "C15",
-    .description = "Namespace clone create/destroy (NS+UTS+NET, pre-alloc stack)",
+    .description = "Namespace clone create/destroy (NS+UTS+NET+PID, pre-alloc stack, no cgroups)",
     .tier = 1, .primary_metric_name = "us/container", .higher_is_better = false,
     .min_iterations = SSB_MIN_ITERATIONS, .max_iterations = SSB_MAX_ITERATIONS,
     .convergence_target = SSB_CONVERGENCE_TARGET,

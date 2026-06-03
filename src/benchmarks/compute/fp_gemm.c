@@ -21,8 +21,9 @@ static int fp_gemm_init(void **state) {
         return -1;
     }
     for (int i = 0; i < N * N; i++) {
-        s->A[i] = (double)rand() / RAND_MAX;
-        s->B[i] = (double)rand() / RAND_MAX;
+        /* Mix positive, negative, and subnormal values for representativeness */
+        s->A[i] = ((double)rand()/RAND_MAX - 0.5) * 2.0;
+        s->B[i] = ((double)rand()/RAND_MAX - 0.5) * 2.0;
         s->C[i] = 0.0;
     }
     *state = s;

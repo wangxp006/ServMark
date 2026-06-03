@@ -50,16 +50,21 @@ static int fp_distance_measure(void *state, measurement_t *result) {
 
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
+    /* Precompute query norm (constant across all vectors) */
+    float query_sq_norm = 0.0f;
+    for (int d = 0; d < VEC_DIM; d++)
+        query_sq_norm += s->query[d] * s->query[d];
+    float inv_query_norm = 1.0f / (sqrtf(query_sq_norm) + 1e-10f);
+
     for (int i = 0; i < NUM_VECTORS; i++) {
-        float dp = 0.0f, sq_norm_a = 0.0f, sq_norm_b = 0.0f;
+        float dp = 0.0f, sq_norm_a = 0.0f;
         for (int d = 0; d < VEC_DIM; d++) {
             float va = s->vectors[i * VEC_DIM + d];
             float vb = s->query[d];
             dp += va * vb;
             sq_norm_a += va * va;
-            sq_norm_b += vb * vb;
         }
-        float cosine = dp / (sqrtf(sq_norm_a) * sqrtf(sq_norm_b) + 1e-10f);
+        float cosine = dp * inv_query_norm / (sqrtf(sq_norm_a) + 1e-10f);
         sink += cosine;
     }
 

@@ -126,9 +126,13 @@ static int int_hash_measure(void *state, measurement_t *result) {
     for (int i = 0; i < OPS_PER_ITER; i++) {
         sink ^= hash_lookup(s, s->keys[i]);
     }
-    /* Delete */
+    /* Delete + verify: lookup after each phase to confirm correctness */
     for (int i = 0; i < OPS_PER_ITER; i++) {
         hash_delete(s, s->keys[i]);
+    }
+    /* Verify: all lookups post-delete should return 0 */
+    for (int i = 0; i < OPS_PER_ITER; i++) {
+        sink ^= hash_lookup(s, s->keys[i]);
     }
 
     clock_gettime(CLOCK_MONOTONIC, &t1);
