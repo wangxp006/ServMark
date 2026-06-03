@@ -19,7 +19,7 @@ static int fs_seq_rw_init(void **state) {
     fs_seq_rw_state_t *s = calloc(1, sizeof(*s));
     if (!s) return -1;
     s->file_path = strdup("/tmp/ssb_seq_rw.dat");
-    s->buffer = malloc(BLOCK_SIZE);
+    posix_memalign((void**)&s->buffer, 4096, BLOCK_SIZE);
     s->write_data = malloc(BLOCK_SIZE);
     if (!s->file_path || !s->buffer || !s->write_data) {
         free(s->file_path); free(s->buffer); free(s->write_data); free(s);

@@ -19,7 +19,7 @@ static int fs_rand_rw_init(void **state) {
     fs_rand_rw_state_t *s = calloc(1, sizeof(*s));
     if (!s) return -1;
     s->file_path = strdup("/tmp/ssb_rand_rw.dat");
-    s->buffer = malloc(BLOCK_SIZE);
+    posix_memalign((void**)&s->buffer, 4096, BLOCK_SIZE);
     s->offsets = malloc(NUM_OPS * sizeof(int));
     if (!s->file_path || !s->buffer || !s->offsets) {
         free(s->file_path); free(s->buffer); free(s->offsets); free(s);
