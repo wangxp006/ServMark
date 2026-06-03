@@ -93,7 +93,7 @@ static int vm_detect_cleanup(void *state) { free(state); return 0; }
 
 benchmark_t bench_vm_detect = {
     .name = "vm-detect", .category = "C14",
-    .description = "VM detection cost (DMI sysfs + CPUID, distinct from vDSO syscall-vdso)",
+    .description = "VM exit latency via CPUID hyp leaf (DMI fallback, x86-VMexit, non-x86 limited)",
     .tier = 1, .primary_metric_name = "ns/call", .higher_is_better = false,
     .min_iterations = SSB_MIN_ITERATIONS, .max_iterations = SSB_MAX_ITERATIONS,
     .convergence_target = SSB_CONVERGENCE_TARGET,
