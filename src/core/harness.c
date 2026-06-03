@@ -140,14 +140,13 @@ static int *harness_parse_cpu_spec(const char *spec, int *count_out) {
          * rather than in harness_run_parallel to keep parsing contained. */
         int *list = calloc(64, sizeof(int)); /* up to 64 NUMA nodes */
         if (!list) { *count_out = 0; return NULL; }
-        int n = 0, max_nodes = 0;
+        int n = 0;
         for (int ni = 0; ni < 64; ni++) {
             char cpath[256];
             snprintf(cpath, sizeof(cpath),
                      "/sys/devices/system/node/node%d/cpulist", ni);
             FILE *f = fopen(cpath, "r");
             if (!f) break;
-            max_nodes = ni + 1;
             char cline[256];
             if (fgets(cline, sizeof(cline), f)) {
                 /* Parse first CPU from cpulist (e.g. "0-15" → 0, "8" → 8) */
@@ -184,6 +183,8 @@ static int *harness_parse_cpu_spec(const char *spec, int *count_out) {
                 list[count++] = c;
         } else if (sscanf(tok, "%d", &start) == 1) {
             if (start >= 0 && start < ncpu) list[count++] = start;
+            else fprintf(stderr, "[warn] --cpu-pin: CPU %d out of range (0-%d)\n",
+                         start, ncpu - 1);
         }
         tok = strtok(NULL, ",");
     }
@@ -386,8 +387,12 @@ static int harness_run_parallel(const benchmark_t *bench, run_mode_t mode,
         s_numa_topo_set = false;
         free(s_cpu_to_numa);
         s_cpu_to_numa = calloc(ncpu, sizeof(int));
-        if (s_cpu_to_numa)
+        if (s_cpu_to_numa) {
             for (int i = 0; i < ncpu; i++) s_cpu_to_numa[i] = -1;
+        } else {
+            fprintf(stderr, "[warn] NUMA map alloc failed (%d CPUs),"
+                    " numa-topo disabled\n", ncpu);
+        }
         if (config && config->numa_topo_spec && config->numa_topo_spec[0]) {
             int nbound = harness_parse_numa_bind(config->numa_topo_spec,
                                                   s_cpu_to_numa, ncpu);
@@ -612,12 +617,15 @@ int harness_run(const run_config_t *config, run_result_t **result_out) {
                         for (int i = 0; i < ncpu; i++)
                             if (c2n[i] == n)
                                 result->sysinfo->numa_nodes[n].cpu_count++;
+                        int ncpus_for_node = result->sysinfo->numa_nodes[n].cpu_count;
                         result->sysinfo->numa_nodes[n].cpu_list =
-                            malloc(result->sysinfo->numa_nodes[n].cpu_count * sizeof(int));
-                        int ci = 0;
-                        for (int i = 0; i < ncpu; i++)
-                            if (c2n[i] == n)
-                                result->sysinfo->numa_nodes[n].cpu_list[ci++] = i;
+                            malloc(ncpus_for_node * sizeof(int));
+                        if (result->sysinfo->numa_nodes[n].cpu_list) {
+                            int ci = 0;
+                            for (int i = 0; i < ncpu; i++)
+                                if (c2n[i] == n)
+                                    result->sysinfo->numa_nodes[n].cpu_list[ci++] = i;
+                        }
                         /* Copy memory_kb from detected node if NID matches */
                         for (int on = 0; on < old_count; on++) {
                             if (old_nodes[on].id == n) {
