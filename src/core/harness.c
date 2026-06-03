@@ -136,10 +136,31 @@ static int *harness_parse_cpu_spec(const char *spec, int *count_out) {
         return list;
     }
     if (strcmp(spec, "auto-numa") == 0) {
-        *count_out = -2;                       /* one CPU per NUMA node */
-        /* Fall through: handled in harness_run_parallel via system_info */
-        int *list = harness_get_physical_cores(&ncpu);
-        *count_out = (list && ncpu > 0) ? ncpu : 0;
+        /* Pick one CPU per NUMA node from sysfs. Handled inline here
+         * rather than in harness_run_parallel to keep parsing contained. */
+        int *list = calloc(64, sizeof(int)); /* up to 64 NUMA nodes */
+        if (!list) { *count_out = 0; return NULL; }
+        int n = 0, max_nodes = 0;
+        for (int ni = 0; ni < 64; ni++) {
+            char cpath[256];
+            snprintf(cpath, sizeof(cpath),
+                     "/sys/devices/system/node/node%d/cpulist", ni);
+            FILE *f = fopen(cpath, "r");
+            if (!f) break;
+            max_nodes = ni + 1;
+            char cline[256];
+            if (fgets(cline, sizeof(cline), f)) {
+                /* Parse first CPU from cpulist (e.g. "0-15" → 0, "8" → 8) */
+                int first_cpu;
+                if (sscanf(cline, "%d-%*d", &first_cpu) == 1 ||
+                    sscanf(cline, "%d", &first_cpu) == 1) {
+                    list[n++] = first_cpu;
+                }
+            }
+            fclose(f);
+        }
+        if (n == 0) { free(list); *count_out = 0; return NULL; }
+        *count_out = n;
         return list;
     }
 
@@ -337,11 +358,15 @@ static int harness_run_parallel(const benchmark_t *bench, run_mode_t mode,
     static int *s_manual_pins = NULL;
     static int s_manual_pin_count = 0;
     static int s_cpu_to_numa[512];          /* per-CPU NUMA node (-1=unset) */
+    static bool s_numa_topo_set = false;     /* true if numa_topo was parsed */
     static int s_membind_node = -1;         /* explicit mbind node, -1=local */
     static bool s_membind_interleave = false;
 
     if (!s_phys_map && !s_manual_pins) {
         s_phys_map = harness_get_physical_cores(&s_num_phys);
+        if (!s_phys_map || s_num_phys <= 0)
+            fprintf(stderr, "[warn] SMT topology detection failed,"
+                    " falling back to sequential CPU pinning\n");
 
         /* Manual CPU pinning */
         if (config && config->cpu_pin_spec) {
@@ -353,12 +378,15 @@ static int harness_run_parallel(const benchmark_t *bench, run_mode_t mode,
 
         /* NUMA topology override */
         int ncpu = (int)sysconf(_SC_NPROCESSORS_ONLN);
+        s_numa_topo_set = false;
         for (int i = 0; i < ncpu && i < 512; i++) s_cpu_to_numa[i] = -1;
         if (config && config->numa_topo_spec && config->numa_topo_spec[0]) {
             int nbound = harness_parse_numa_bind(config->numa_topo_spec,
                                                   s_cpu_to_numa, ncpu);
-            if (nbound > 0)
+            if (nbound > 0) {
+                s_numa_topo_set = true;
                 fprintf(stderr, "[numa-topo] override: %d CPUs mapped\n", nbound);
+            }
         }
 
         /* Memory binding policy */
@@ -376,7 +404,7 @@ static int harness_run_parallel(const benchmark_t *bench, run_mode_t mode,
         }
 
         /* Validation: warn if pinned CPUs have no NUMA assignment */
-        if (s_manual_pins && s_manual_pin_count > 0 && s_cpu_to_numa[0] != -1) {
+        if (s_manual_pins && s_manual_pin_count > 0 && s_numa_topo_set) {
             int missing = 0;
             for (int i = 0; i < s_manual_pin_count; i++) {
                 int cpu = s_manual_pins[i];
@@ -421,41 +449,38 @@ static int harness_run_parallel(const benchmark_t *bench, run_mode_t mode,
             CPU_SET(pin_cpu, &cpuset);
             sched_setaffinity(0, sizeof(cpu_set_t), &cpuset);
 
-            /* NUMA memory policy: apply mbind based on membind_spec or numa_topo */
+            /* NUMA memory policy: use set_mempolicy() BEFORE benchmark init()
+             * so all future malloc/mmap allocations obey the policy.
+             * mbind() only affects existing mappings and requires valid VMA
+             * addresses — set_mempolicy() is the correct API for benchmarking. */
             {
-                int nid = -1;
-                int node_count = 0;
-                unsigned long nodemask = 0;
                 int mode = MPOL_DEFAULT;
+                unsigned long nodemask = 0;
+                int maxnode = 0;
 
                 if (s_membind_interleave) {
                     mode = MPOL_INTERLEAVE;
-                    /* Use all nodes from numa_topo or detected */
                     int nc = (int)sysconf(_SC_NPROCESSORS_ONLN);
-                    for (int i = 0; i < nc; i++) {
-                        int nn = (s_cpu_to_numa[i] >= 0) ? s_cpu_to_numa[i] : -1;
-                        if (nn >= 0) nodemask |= (1UL << nn);
+                    for (int ci = 0; ci < nc; ci++) {
+                        int nn = (s_cpu_to_numa[ci] >= 0) ? s_cpu_to_numa[ci] : -1;
+                        if (nn >= 0) { nodemask |= (1UL << nn); if (nn + 1 > maxnode) maxnode = nn + 1; }
                     }
-                    if (nodemask == 0) nodemask = ~0UL; /* all nodes */
+                    if (nodemask == 0) { nodemask = ~0UL; maxnode = 64; }
                 } else if (s_membind_node >= 0) {
-                    nid = s_membind_node;
                     mode = MPOL_BIND;
-                    nodemask = 1UL << nid;
+                    nodemask = 1UL << s_membind_node;
+                    maxnode = s_membind_node + 1;
                 } else if (s_cpu_to_numa[pin_cpu] >= 0) {
-                    /* --numa-topo set: bind memory to this CPU's NUMA node */
-                    nid = s_cpu_to_numa[pin_cpu];
                     mode = MPOL_BIND;
+                    int nid = s_cpu_to_numa[pin_cpu];
                     nodemask = 1UL << nid;
+                    maxnode = nid + 1;
                 }
 
-                if (mode != MPOL_DEFAULT) {
-                    long pagesize = sysconf(_SC_PAGESIZE);
-                    /* mbind on the entire address space (best-effort via MPOL_MF_MOVE) */
-                    unsigned long addr = 0;
-                    unsigned long len = (1UL << 47); /* try to cover full VA */
-                    mbind((void*)addr, len, mode, &nodemask, sizeof(nodemask)*8,
-                          MPOL_MF_STRICT | MPOL_MF_MOVE);
-                    (void)pagesize; /* silence unused warning */
+                if (mode != MPOL_DEFAULT && maxnode > 0) {
+                    if (set_mempolicy(mode, &nodemask, (unsigned long)maxnode + 1) != 0) {
+                        fprintf(stderr, "[warn] set_mempolicy failed (may need root)\n");
+                    }
                 }
             }
 
@@ -568,6 +593,10 @@ int harness_run(const run_config_t *config, run_result_t **result_out) {
                 /* Free old numa_nodes, rebuild from user spec */
                 free(result->sysinfo->numa_nodes);
                 result->sysinfo->numa_node_count = n_nodes;
+                /* Save detected node info for memory/distance retention */
+                numa_node_t *old_nodes = result->sysinfo->numa_nodes;
+                int old_count = result->sysinfo->numa_node_count;
+
                 result->sysinfo->numa_nodes = calloc(n_nodes, sizeof(numa_node_t));
                 if (result->sysinfo->numa_nodes) {
                     for (int n = 0; n < n_nodes; n++) {
@@ -582,11 +611,25 @@ int harness_run(const run_config_t *config, run_result_t **result_out) {
                         for (int i = 0; i < ncpu; i++)
                             if (c2n[i] == n)
                                 result->sysinfo->numa_nodes[n].cpu_list[ci++] = i;
-                        /* Set self-distance=10, others=20 as default */
-                        for (int d = 0; d < 16; d++)
-                            result->sysinfo->numa_nodes[n].distance[d] = (d == n) ? 10 : 20;
+                        /* Copy memory_kb from detected node if NID matches */
+                        for (int on = 0; on < old_count; on++) {
+                            if (old_nodes[on].id == n) {
+                                result->sysinfo->numa_nodes[n].memory_kb =
+                                    old_nodes[on].memory_kb;
+                                memcpy(result->sysinfo->numa_nodes[n].distance,
+                                       old_nodes[on].distance, sizeof(old_nodes[on].distance));
+                                break;
+                            }
+                        }
+                        /* Fallback: self-distance=10, others=20 */
+                        if (result->sysinfo->numa_nodes[n].distance[n] == 0) {
+                            for (int d = 0; d < 16; d++)
+                                result->sysinfo->numa_nodes[n].distance[d] =
+                                    (d == n) ? 10 : 20;
+                        }
                     }
                 }
+                free(old_nodes);
                 fprintf(stderr, "[numa-bind] topology override: %d CPUs → %d nodes\n",
                         bound, n_nodes);
             }

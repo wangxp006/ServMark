@@ -191,16 +191,27 @@ int system_probe(system_info_t **info_out) {
                     info->numa_nodes[ni].id = ni;
                     char cpath[256];
 
-                    /* Read cpumap to count CPUs on this node */
+                    /* Read cpumap to count CPUs on this node.
+                     * Format: comma-separated 32-bit hex groups.
+                     * Each group covers 32 CPUs. Parse all for >64-core. */
                     snprintf(cpath, sizeof(cpath),
                             "/sys/devices/system/node/node%d/cpumap", ni);
                     FILE *cf = fopen(cpath, "r");
                     if (cf) {
-                        char cmap[256];
+                        char cmap[1024];
                         if (fgets(cmap, sizeof(cmap), cf)) {
-                            unsigned long long mask = strtoull(cmap, NULL, 16);
+                            size_t clen = strlen(cmap);
+                            while (clen > 0 && (cmap[clen-1]=='\n' || cmap[clen-1]=='\r'))
+                                cmap[--clen] = '\0';
                             int cpu_count = 0;
-                            while (mask) { cpu_count += mask & 1; mask >>= 1; }
+                            char *save = NULL;
+                            char *tok = strtok_r(cmap, ",", &save);
+                            while (tok) {
+                                unsigned long val = strtoul(tok, NULL, 16);
+                                for (int b = 0; b < 32; b++)
+                                    if (val & (1UL << b)) cpu_count++;
+                                tok = strtok_r(NULL, ",", &save);
+                            }
                             info->numa_nodes[ni].cpu_count = cpu_count;
                         }
                         fclose(cf);
