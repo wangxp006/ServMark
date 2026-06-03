@@ -172,13 +172,73 @@ static int *harness_parse_cpu_spec(const char *spec, int *count_out) {
  * Returns nums of bound CPUs, or 0 if spec is NULL/empty. */
 static int harness_parse_numa_bind(const char *spec, int *cpu_to_numa, int max_cpu) {
     if (!spec || !spec[0]) return 0;
-    /* Initialize to -1 (unset) */
     for (int i = 0; i < max_cpu; i++) cpu_to_numa[i] = -1;
     int ncpu = (int)sysconf(_SC_NPROCESSORS_ONLN);
     int bound = 0;
-    char *buf = strdup(spec);
+    char *buf = NULL;
+
+    /* Shorthand: single integer "N" = auto-split N nodes evenly */
+    char *endp = NULL;
+    long nnodes = strtol(spec, &endp, 10);
+    if (endp && *endp == '\0' && nnodes > 0 && nnodes <= 16) {
+        int cpus_per = (ncpu + (int)nnodes - 1) / (int)nnodes;
+        for (int i = 0; i < ncpu && i < max_cpu; i++) {
+            cpu_to_numa[i] = i / cpus_per;
+            if (cpu_to_numa[i] >= (int)nnodes) cpu_to_numa[i] = (int)nnodes - 1;
+            bound++;
+        }
+        return bound;
+    }
+
+    /* Load from file: "@path/to/topo.txt" */
+    if (spec[0] == '@') {
+        FILE *f = fopen(spec + 1, "r");
+        if (!f) { fprintf(stderr, "[numa-topo] cannot open '%s'\n", spec + 1); return 0; }
+        char line[4096]; char *combined = NULL; size_t clen = 0;
+        while (fgets(line, sizeof(line), f)) {
+            char *p = line;
+            while (*p == ' ' || *p == '\t') p++;
+            if (*p == '#' || *p == '\n' || *p == '\0') continue;
+            size_t plen = strlen(p);
+            while (plen > 0 && (p[plen-1] == '\n' || p[plen-1] == '\r')) plen--;
+            char *add = realloc(combined, clen + plen + 2);
+            if (!add) { free(combined); fclose(f); return 0; }
+            combined = add;
+            if (clen > 0) combined[clen++] = ',';
+            memcpy(combined + clen, p, plen);
+            clen += plen; combined[clen] = '\0';
+        }
+        fclose(f);
+        if (!combined) return 0;
+        buf = strdup(combined); free(combined);
+        if (!buf) return 0;
+        /* Fall through to parsing below using the combined string */
+        char *save = NULL;
+        char *tok = strtok_r(buf, ",", &save);
+        while (tok) {
+            while (*tok == ' ' || *tok == '\t') tok++;
+            char *colon = strchr(tok, ':');
+            if (colon) {
+                *colon = '\0';
+                int nid = atoi(colon + 1);
+                int start, end;
+                if (sscanf(tok, "%d-%d", &start, &end) == 2) {
+                    for (int c = start; c <= end && c < ncpu && c < max_cpu; c++)
+                    { cpu_to_numa[c] = nid; bound++; }
+                } else if (sscanf(tok, "%d", &start) == 1) {
+                    if (start >= 0 && start < ncpu && start < max_cpu)
+                    { cpu_to_numa[start] = nid; bound++; }
+                }
+            }
+            tok = strtok_r(NULL, ",", &save);
+        }
+        free(buf);
+        return bound;
+    }
+
+    /* Inline format: "18:0,19:0,0-15:1" */
+    buf = strdup(spec);
     if (!buf) return 0;
-    /* Split by comma: "18:0,19:0,20:1" */
     char *save = NULL;
     char *tok = strtok_r(buf, ",", &save);
     while (tok) {

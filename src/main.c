@@ -35,7 +35,7 @@ static void print_usage(const char *prog) {
     printf("  --convergence <F>         Override convergence SEM/mean target\n");
     printf("  --max-runtime <sec>       Override max runtime per benchmark\n");
     printf("  --cpu-pin <spec>          CPU pinning: auto|auto-all|auto-numa|<list>\n");
-    printf("  --numa-topo <spec>        NUMA topology: 18:0,19:0 or 0-15:0,16-31:1\n");
+    printf("  --numa-topo <spec>        NUMA topo: N|@file|cpu_range:nid,...\n");
     printf("  --membind <policy>        Memory policy: local|interleave|<node_id>\n");
     printf("  --cooldown <sec>          Override cooldown between benchmarks\n");
     printf("  --version                 Print version and exit\n");
