@@ -75,9 +75,9 @@ static int syscall_uring_cleanup(void *state) {
 }
 
 benchmark_t bench_syscall_uring = {
-    .name = "syscall-uring",
+    .name = "syscall-raw",
     .category = "C12",
-    .description = "Raw syscall(SYS_getpid) baseline (glibc syscall dispatcher, no io_uring yet)",
+    .description = "Raw syscall(SYS_getpid) baseline (glibc vs vDSO comparison, arch-neutral)",
     .tier = 2,
     .primary_metric_name = "calls/sec",
     .higher_is_better = true,

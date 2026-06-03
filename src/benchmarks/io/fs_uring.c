@@ -88,7 +88,7 @@ static int fs_uring_cleanup(void *state) {
 
 benchmark_t bench_fs_uring = {
     .name = "fs-uring", .category = "C10",
-    .description = "io_uring-style random read (sync pread fallback)",
+    .description = "Random 4KB read via pread() (io_uring placeholder, sync fallback only)",
     .tier = 2, .primary_metric_name = "IOPS", .higher_is_better = true,
     .min_iterations = SSB_MIN_ITERATIONS, .max_iterations = SSB_MAX_ITERATIONS,
     .convergence_target = SSB_CONVERGENCE_TARGET,

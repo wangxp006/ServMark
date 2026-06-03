@@ -59,8 +59,8 @@ static int vm_cpu_overhead_cleanup(void *state) {
 }
 
 benchmark_t bench_vm_cpu_overhead = {
-    .name="vm-cpu-overhead", .category="C14",
-    .description="CPU compute throughput (Sieve of Eratosthenes, pure userspace, no virt code)",
+    .name="vm-cpu-overhead", .category="C1",
+    .description="Sieve of Eratosthenes pure integer compute (fixed-work, arch-neutral ALU stress)",
     .tier=1, .primary_metric_name="passes/sec", .higher_is_better=true,
     .min_iterations=SSB_MIN_ITERATIONS, .max_iterations=SSB_MAX_ITERATIONS,
     .convergence_target=SSB_CONVERGENCE_TARGET,

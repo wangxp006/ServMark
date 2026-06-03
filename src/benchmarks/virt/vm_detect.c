@@ -8,19 +8,16 @@
 #define DETECT_ITERS 1000000
 
 /*
- * VM detection + hypervisor identification benchmark (ARCH-NEUTRAL).
+ * VM detection via DMI sysfs (ARCH-NEUTRAL).
  *
- * Measures the cost of calling detect_hypervisor() which probes DMI
- * sysfs on ALL architectures, plus CPUID fallback on x86.
+ * Measures the cost of probing /sys/class/dmi/id/product_name to
+ * detect hypervisor presence. Uses only sysfs DMI — no x86 CPUID,
+ * no architecture-specific instructions. Same code path on all
+ * architectures (x86, ARM64, RISC-V).
  *
- * This is distinct from syscall-vdso (which measures pure vDSO
- * clock_gettime latency) — vm-detect measures the actual cost of
- * determining whether we run on bare metal or under a hypervisor.
+ * This is a VFS/dentry-cache microbenchmark, not a true VM-exit
+ * measurement. For real VM-exit latency see hardware-specific tools.
  */
-
-#if defined(__x86_64__) || defined(__i386__)
-#include <cpuid.h>
-#endif
 
 typedef struct { int dummy; } vm_detect_state_t;
 
@@ -35,17 +32,6 @@ static const char *detect_hypervisor(void) {
             if (strstr(buf, "VirtualBox")) return "VirtualBox";
         } else fclose(f);
     }
-#if defined(__x86_64__) || defined(__i386__)
-    unsigned int eax, ebx, ecx, edx;
-    if (__get_cpuid(0x40000000, &eax, &ebx, &ecx, &edx)) {
-        uint32_t r[3] = {ebx, ecx, edx};
-        if (r[0]==0x4B4D564B && r[1]==0x564B4D56 && r[2]==0x0000004B) return "KVM";
-        if (r[0]==0x61774D56 && r[1]==0x4D566572 && r[2]==0x65726177) return "VMware";
-        if (r[0]==0x7263694D && r[1]==0x666F736F && r[2]==0x76482074) return "Hyper-V";
-        if (r[0]==0x6E655800 && r[1]==0x4D4D5665 && r[2]==0x65586E00) return "Xen";
-        return "unknown-hv";
-    }
-#endif
     return "bare-metal";
 }
 
@@ -70,12 +56,8 @@ static int vm_detect_measure(void *state, measurement_t *result) {
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
     for (int i = 0; i < DETECT_ITERS; i++) {
-        /*
-         * On first invocation (or first few), detect_hypervisor() hits
-         * the sysfs dentry cache. Subsequent calls may still access the
-         * VFS layer. This measures the cost of the full detection path
-         * — distinct from pure vDSO syscall-vdso benchmark.
-         */
+        /* DMI sysfs probe — measures VFS dentry-cache latency.
+         * Architecture-neutral: no CPUID, same syscall path everywhere. */
         hv_result = detect_hypervisor();
     }
 
@@ -93,7 +75,7 @@ static int vm_detect_cleanup(void *state) { free(state); return 0; }
 
 benchmark_t bench_vm_detect = {
     .name = "vm-detect", .category = "C14",
-    .description = "VM exit latency via CPUID hyp leaf (DMI fallback, x86-VMexit, non-x86 limited)",
+    .description = "VM detect via DMI sysfs probe (arch-neutral, VFS dentry-cache latency)",
     .tier = 1, .primary_metric_name = "ns/call", .higher_is_better = false,
     .min_iterations = SSB_MIN_ITERATIONS, .max_iterations = SSB_MAX_ITERATIONS,
     .convergence_target = SSB_CONVERGENCE_TARGET,

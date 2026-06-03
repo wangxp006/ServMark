@@ -65,7 +65,7 @@ static int sync_spinlock_cleanup(void *state) {
 benchmark_t bench_sync_spinlock = {
     .name = "sync-spinlock",
     .category = "C7",
-    .description = "pthread_spinlock lock/unlock throughput",
+    .description = "pthread_spinlock lock/unlock contention (auto-scaled threads)",
     .tier = 1,
     .primary_metric_name = "ops/sec",
     .higher_is_better = true,
@@ -79,6 +79,6 @@ benchmark_t bench_sync_spinlock = {
     .warmup = sync_spinlock_warmup,
     .measure = sync_spinlock_measure,
     .cleanup = sync_spinlock_cleanup,
-    .num_threads = 1,
+    .num_threads = -1,
 };
 SSB_BENCHMARK_REGISTER(bench_sync_spinlock);
