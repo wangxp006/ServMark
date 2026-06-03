@@ -142,6 +142,49 @@ static int *harness_parse_cpu_spec(const char *spec, int *count_out) {
     *count_out = count;
     return list;
 }
+
+/* Parse per-CPU NUMA binding spec. Format: "cpu_range:nid,..."
+ * Examples: "18:0,19:0,20:1"  "0-15:0,16-31:1"
+ * Fills cpu_to_numa[] where cpu_to_numa[cpu_id] = node_id (-1 = unset).
+ * Returns nums of bound CPUs, or 0 if spec is NULL/empty. */
+static int harness_parse_numa_bind(const char *spec, int *cpu_to_numa, int max_cpu) {
+    if (!spec || !spec[0]) return 0;
+    /* Initialize to -1 (unset) */
+    for (int i = 0; i < max_cpu; i++) cpu_to_numa[i] = -1;
+    int ncpu = (int)sysconf(_SC_NPROCESSORS_ONLN);
+    int bound = 0;
+    char *buf = strdup(spec);
+    if (!buf) return 0;
+    /* Split by comma: "18:0,19:0,20:1" */
+    char *save = NULL;
+    char *tok = strtok_r(buf, ",", &save);
+    while (tok) {
+        while (*tok == ' ' || *tok == '\t') tok++;
+        /* Split by colon: "18:0" or "0-15:0" */
+        char *colon = strchr(tok, ':');
+        if (colon) {
+            *colon = '\0';
+            char *cpu_part = tok;
+            char *node_part = colon + 1;
+            int nid = atoi(node_part);
+            /* Parse CPU part: single id or range */
+            int start, end;
+            if (sscanf(cpu_part, "%d-%d", &start, &end) == 2) {
+                for (int c = start; c <= end && c < ncpu && c < max_cpu; c++) {
+                    cpu_to_numa[c] = nid; bound++;
+                }
+            } else if (sscanf(cpu_part, "%d", &start) == 1) {
+                if (start >= 0 && start < ncpu && start < max_cpu) {
+                    cpu_to_numa[start] = nid; bound++;
+                }
+            }
+        }
+        tok = strtok_r(NULL, ",", &save);
+    }
+    free(buf);
+    return bound;
+}
+
 /* Read thread siblings to find physical core mapping.
  * Returns an array mapping logical CPU -> physical core ID,
  * or NULL on failure (caller should fall back to sequential pinning). */
@@ -346,6 +389,49 @@ int harness_run(const run_config_t *config, run_result_t **result_out) {
     result->start_time = time(NULL);
 
     system_probe(&result->sysinfo);
+
+    /* Override NUMA CPU topology from user-specified numa_bind spec */
+    if (config->numa_bind_spec && config->numa_bind_spec[0] &&
+        result->sysinfo && result->sysinfo->numa_nodes) {
+        int ncpu = (int)sysconf(_SC_NPROCESSORS_ONLN);
+        int *c2n = calloc(ncpu, sizeof(int));
+        if (c2n) {
+            for (int i = 0; i < ncpu; i++) c2n[i] = -1;
+            int bound = harness_parse_numa_bind(config->numa_bind_spec, c2n, ncpu);
+            if (bound > 0) {
+                /* Count distinct NUMA nodes + CPUs per node */
+                int max_nid = -1;
+                for (int i = 0; i < ncpu; i++)
+                    if (c2n[i] > max_nid) max_nid = c2n[i];
+                int n_nodes = max_nid + 1;
+                /* Free old numa_nodes, rebuild from user spec */
+                free(result->sysinfo->numa_nodes);
+                result->sysinfo->numa_node_count = n_nodes;
+                result->sysinfo->numa_nodes = calloc(n_nodes, sizeof(numa_node_t));
+                if (result->sysinfo->numa_nodes) {
+                    for (int n = 0; n < n_nodes; n++) {
+                        result->sysinfo->numa_nodes[n].id = n;
+                        /* Count CPUs for this node */
+                        for (int i = 0; i < ncpu; i++)
+                            if (c2n[i] == n)
+                                result->sysinfo->numa_nodes[n].cpu_count++;
+                        result->sysinfo->numa_nodes[n].cpu_list =
+                            malloc(result->sysinfo->numa_nodes[n].cpu_count * sizeof(int));
+                        int ci = 0;
+                        for (int i = 0; i < ncpu; i++)
+                            if (c2n[i] == n)
+                                result->sysinfo->numa_nodes[n].cpu_list[ci++] = i;
+                        /* Set self-distance=10, others=20 as default */
+                        for (int d = 0; d < 16; d++)
+                            result->sysinfo->numa_nodes[n].distance[d] = (d == n) ? 10 : 20;
+                    }
+                }
+                fprintf(stderr, "[numa-bind] topology override: %d CPUs → %d nodes\n",
+                        bound, n_nodes);
+            }
+            free(c2n);
+        }
+    }
 
     const benchmark_t **benchmarks;
     int bench_count;
