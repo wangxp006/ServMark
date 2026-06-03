@@ -39,15 +39,14 @@ static int mem_bandwidth_measure(void *state, measurement_t *result) {
 
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
-    /* Sequential read bandwidth: non-volatile accumulator in register,
-     * single memory-clobber barrier at end to prevent dead-code elimination. */
+    /* Sequential read bandwidth. volatile load prevents Clang auto-vec
+     * (GCC -O2 is scalar, but Clang -O2 auto-vectorizes. This keeps
+     * cross-compiler results comparable per project design). */
     {
-        uint64_t *src64 = (uint64_t *)s->src;
+        volatile uint64_t *src64 = (volatile uint64_t *)s->src;
         size_t count = BUF_SIZE / sizeof(uint64_t);
         uint64_t sink64 = 0;
-        for (size_t i = 0; i < count; i++) {
-            sink64 += src64[i];
-        }
+        for (size_t i = 0; i < count; i++) sink64 += src64[i];
         __asm__ __volatile__("" : "+r"(sink64) : : "memory");
     }
 
