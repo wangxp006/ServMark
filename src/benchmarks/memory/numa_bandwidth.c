@@ -38,6 +38,7 @@ static int numa_bandwidth_init(void **state) {
     if (!s) return -1;
     if (numa_available() < 0) { free(s); return -1; }
     int max_node = numa_max_node();
+    if (max_node < 1) { free(s); return -1; }
     s->node = max_node > 0 ? 1 : 0;
     s->buffer = numa_alloc_onnode(BUF_SIZE, s->node);
     if (!s->buffer) { free(s); return -1; }
@@ -64,7 +65,7 @@ static int numa_bandwidth_measure(void *state, measurement_t *result) {
     size_t ch = BUF_SIZE / n;
     clock_gettime(CLOCK_MONOTONIC, &t0);
     for (int t = 0; t < n; t++) {
-        args[t] = (bw_thread_arg_t){s->buffer, t*ch, (t+1)*ch, s->node};
+        args[t] = (bw_thread_arg_t){s->buffer, t*ch, (t+1)*ch, 0}; /* run local, read remote */
         pthread_create(&th[t], NULL, bw_worker, &args[t]);
     }
     for (int t = 0; t < n; t++) pthread_join(th[t], NULL);

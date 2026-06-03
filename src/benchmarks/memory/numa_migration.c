@@ -26,6 +26,7 @@ static int numa_migration_init(void **state) {
     if (!s) return -1;
     if (numa_available() < 0) { free(s); return -1; }
     int max_node = numa_max_node();
+    if (max_node < 1) { free(s); return -1; }
     s->nodes[0] = 0;
     s->nodes[1] = max_node > 0 ? 1 : 0;
     long ps = sysconf(_SC_PAGESIZE);
