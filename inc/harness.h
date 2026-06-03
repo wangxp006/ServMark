@@ -23,6 +23,9 @@ typedef struct {
     int cooldown_sec;
     bool reportable;         /* skip benchmarks with CV >= 10% */
     bool require_validate;   /* auto-run --validate before benchmark run */
+    /* Manual CPU / NUMA binding */
+    char *cpu_pin_spec;      /* "auto" | "0,2,4,6" | "0-7" — CPU pinning list */
+    char *numa_bind_spec;    /* "0:0-15;1:16-31" — manual NUMA CPU topology */
 } run_config_t;
 
 typedef struct {

@@ -29,10 +29,13 @@ static void print_usage(const char *prog) {
     printf("  --reference <file>        Frozen reference file path\n");
     printf("  --dry-run                 List benchmarks without running\n");
     printf("  --list-categories         List categories and exit\n");
+    printf("  --list-topology           Show CPU/NUMA/cache topology and exit\n");
     printf("  --min-iterations <N>      Override min iterations (default: 5)\n");
     printf("  --max-iterations <N>      Override max iterations (default: 31)\n");
     printf("  --convergence <F>         Override convergence SEM/mean target\n");
     printf("  --max-runtime <sec>       Override max runtime per benchmark\n");
+    printf("  --cpu-pin <spec>          CPU pinning: auto, 0-7, or 0,2,4,6\n");
+    printf("  --numa-bind <spec>        Manual NUMA topology: 0:0-15;1:16-31\n");
     printf("  --cooldown <sec>          Override cooldown between benchmarks\n");
     printf("  --version                 Print version and exit\n");
     printf("  --help                    Show this help\n");
@@ -97,6 +100,10 @@ static int parse_config(const char *path, run_config_t *cfg, char ***bench_filte
             cfg->reportable = (atoi(value) != 0);
         } else if (strcmp(key, "require_validate") == 0) {
             cfg->require_validate = (atoi(value) != 0);
+        } else if (strcmp(key, "cpu_pin") == 0) {
+            cfg->cpu_pin_spec = strdup(value);
+        } else if (strcmp(key, "numa_bind") == 0) {
+            cfg->numa_bind_spec = strdup(value);
         } else if (strcmp(key, "march_native") == 0 ||
                    strcmp(key, "isa_baseline") == 0) {
             fprintf(stderr, "Warning: %s:%d: key '%s' is build-time only, set via cmake -DSSB_USE_MARCH_NATIVE=ON\n",
@@ -165,10 +172,13 @@ int main(int argc, char *argv[]) {
         {"reference", required_argument, 0, 'r'},
         {"dry-run", no_argument, 0, 'n'},
         {"list-categories", no_argument, 0, 'L'},
+        {"list-topology", no_argument, 0, 'Z'},
         {"min-iterations", required_argument, 0, 'i'},
         {"max-iterations", required_argument, 0, 'I'},
         {"convergence", required_argument, 0, 'g'},
         {"max-runtime", required_argument, 0, 'R'},
+        {"cpu-pin", required_argument, 0, 'P'},
+        {"numa-bind", required_argument, 0, 'N'},
         {"cooldown", required_argument, 0, 'd'},
         {"version", no_argument, 0, 'V'},
         {"help", no_argument, 0, 'h'},
@@ -192,7 +202,7 @@ int main(int argc, char *argv[]) {
     parse_config(config_path, &config, &bench_filter, &bench_filter_count);
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "C:m:vt:c:b:T:xo:r:nLi:I:g:R:d:Vh", long_opts, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "C:m:vt:c:b:T:xo:r:nLZi:I:g:R:P:N:d:Vh", long_opts, NULL)) != -1) {
         switch (opt) {
         case 'C': config_path = optarg; break;
         case 'm':
@@ -226,10 +236,40 @@ int main(int argc, char *argv[]) {
                        cats[ci].id, cats[ci].name, cats[ci].weight * 100.0);
             free(bench_filter); return 0;
         }
+        case 'Z': {
+            system_info_t *info = NULL;
+            system_probe(&info);
+            if (info) {
+                printf("CPU topology:\n");
+                printf("  Model: %s\n", info->cpu_model);
+                printf("  Physical cores: %d, Logical threads: %d, SMT: %s\n",
+                       info->cpu_cores_physical, info->cpu_threads_logical,
+                       info->smt_enabled ? "yes" : "no");
+                printf("  NUMA nodes: %d\n", info->numa_node_count);
+                for (int ni = 0; ni < info->numa_node_count; ni++) {
+                    printf("    Node %d: %d CPUs, %zu MB RAM\n",
+                           info->numa_nodes[ni].id,
+                           info->numa_nodes[ni].cpu_count,
+                           info->numa_nodes[ni].memory_kb / 1024);
+                }
+                printf("  Cache levels: %d\n", info->cache_level_count);
+                for (int ci = 0; ci < info->cache_level_count; ci++) {
+                    printf("    L%d %s: %zu KB (line=%d, assoc=%d)\n",
+                           info->caches[ci].level, info->caches[ci].type,
+                           info->caches[ci].size_kb,
+                           info->caches[ci].line_size,
+                           info->caches[ci].associativity);
+                }
+                system_free(info);
+            }
+            free(bench_filter); return 0;
+        }
         case 'i': config.min_iterations = atoi(optarg); break;
         case 'I': config.max_iterations = atoi(optarg); break;
         case 'g': config.convergence_target = atof(optarg); break;
         case 'R': config.max_runtime_sec = atoi(optarg); break;
+        case 'P': config.cpu_pin_spec = optarg; break;
+        case 'N': config.numa_bind_spec = optarg; break;
         case 'd': config.cooldown_sec = atoi(optarg); break;
         case 'V': printf("ServMark %s\n", SSB_VERSION); free(bench_filter); return 0;
         case 'h': print_usage(argv[0]); free(bench_filter); return 0;

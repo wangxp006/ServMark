@@ -110,6 +110,39 @@ int harness_run_single(const benchmark_t *bench, run_mode_t mode,
 
 
 /* Read thread siblings to find physical core mapping.
+
+/* Parse a CPU pin spec string into an array of CPU IDs.
+ * Formats: "auto" -> list=NULL, count=0 (auto-detect)
+ *          "0,2,4,6" -> [0,2,4,6], "0-7" -> [0..7]
+ *          "0-3,8-11" -> [0,1,2,3,8,9,10,11]
+ * Returns malloc'd array, caller must free. */
+static int *harness_parse_cpu_spec(const char *spec, int *count_out) {
+    if (!spec || strcmp(spec, "auto") == 0) {
+        *count_out = 0; return NULL;
+    }
+    int ncpu = (int)sysconf(_SC_NPROCESSORS_ONLN);
+    int *list = calloc(512, sizeof(int));
+    if (!list) { *count_out = 0; return NULL; }
+    int count = 0;
+    char *buf = strdup(spec);
+    if (!buf) { free(list); *count_out = 0; return NULL; }
+    char *tok = strtok(buf, ",");
+    while (tok && count < 512) {
+        while (*tok == ' ' || *tok == '\t') tok++;
+        int start, end;
+        if (sscanf(tok, "%d-%d", &start, &end) == 2) {
+            for (int c = start; c <= end && c < ncpu && count < 512; c++)
+                list[count++] = c;
+        } else if (sscanf(tok, "%d", &start) == 1) {
+            if (start >= 0 && start < ncpu) list[count++] = start;
+        }
+        tok = strtok(NULL, ",");
+    }
+    free(buf);
+    *count_out = count;
+    return list;
+}
+/* Read thread siblings to find physical core mapping.
  * Returns an array mapping logical CPU -> physical core ID,
  * or NULL on failure (caller should fall back to sequential pinning). */
 static int *harness_get_physical_cores(int *num_physical) {
@@ -162,12 +195,31 @@ static int *harness_get_physical_cores(int *num_physical) {
 /* Run N independent processes in parallel, one pinned per core.
  * Each child runs the full benchmark lifecycle and sends results back via pipe. */
 static int harness_run_parallel(const benchmark_t *bench, run_mode_t mode,
-                                 int num_instances, benchmark_stats_t *stats) {
+                                 int num_instances, benchmark_stats_t *stats,
+                                 const run_config_t *config) {
     int (*pipes)[2] = malloc(num_instances * sizeof(int[2]));
     pid_t *pids = malloc(num_instances * sizeof(pid_t));
     if (!pipes || !pids) {
         free(pipes); free(pids);
         return -1;
+    }
+
+    /* One-time init: auto-detect physical cores + parse manual CPU pinning.
+     * Static so children inherit via fork()'s copy of the data segment. */
+    static int *s_phys_map = NULL;
+    static int s_num_phys = 0;
+    static int *s_manual_pins = NULL;
+    static int s_manual_pin_count = 0;
+
+    if (!s_phys_map && !s_manual_pins) {
+        s_phys_map = harness_get_physical_cores(&s_num_phys);
+        if (config && config->cpu_pin_spec) {
+            s_manual_pins = harness_parse_cpu_spec(config->cpu_pin_spec,
+                                                    &s_manual_pin_count);
+            if (s_manual_pin_count > 0)
+                fprintf(stderr, "[cpu-pin] manual: %d CPUs specified\n",
+                        s_manual_pin_count);
+        }
     }
 
     for (int i = 0; i < num_instances; i++) {
@@ -185,22 +237,19 @@ static int harness_run_parallel(const benchmark_t *bench, run_mode_t mode,
             /* Child process */
             close(pipes[i][0]); /* close read end */
 
-            /* Pin to specific physical core (skip HT siblings) */
+            /* Pin to specific CPU core.
+             * Priority: 1) manual --cpu-pin spec  2) SMT-aware auto  3) sequential
+             * s_* statics are set by parent before fork and inherited by children. */
             cpu_set_t cpuset;
             CPU_ZERO(&cpuset);
-            /* Use physical core mapping if available, else fall back to sequential.
-             * Discover physical cores once and apply SMT-aware pinning to ALL children. */
             int pin_cpu = i;
-            static int *phys_map = NULL;
-            static int num_phys = 0;
-            if (!phys_map) {
-                phys_map = harness_get_physical_cores(&num_phys);
-            }
-            if (phys_map && num_phys > 0) {
-                /* Map instance i to physical core, wrapping if i >= num_phys */
-                int phys_id = i % num_phys;
+
+            if (s_manual_pins && s_manual_pin_count > 0) {
+                pin_cpu = s_manual_pins[i % s_manual_pin_count];
+            } else if (s_phys_map && s_num_phys > 0) {
+                int phys_id = i % s_num_phys;
                 for (int c = 0; c < (int)sysconf(_SC_NPROCESSORS_ONLN); c++) {
-                    if (phys_map[c] == phys_id) { pin_cpu = c; break; }
+                    if (s_phys_map[c] == phys_id) { pin_cpu = c; break; }
                 }
             }
             CPU_SET(pin_cpu, &cpuset);
@@ -333,7 +382,7 @@ int harness_run(const run_config_t *config, run_result_t **result_out) {
 
         int ret;
         if (n > 1 && b->num_threads == 1)
-            ret = harness_run_parallel(b, config->mode, n, &sr->stats);
+            ret = harness_run_parallel(b, config->mode, n, &sr->stats, config);
         else
             ret = harness_run_single(b, config->mode, &sr->stats, config);
 
