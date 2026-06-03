@@ -77,7 +77,7 @@ static int ipc_signal_cleanup(void *state) {
 benchmark_t bench_ipc_signal = {
     .name = "ipc-signal",
     .category = "C11",
-    .description = "kill() signal delivery throughput (SIGUSR1, arch-neutral syscall cost)",
+    .description = "kill() signal send throughput (SIGUSR1, syscall-cost dominant, standard signals coalesce)",
     .tier = 1,
     .primary_metric_name = "signals/sec",
     .higher_is_better = true,
