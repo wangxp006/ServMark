@@ -34,8 +34,9 @@ static void print_usage(const char *prog) {
     printf("  --max-iterations <N>      Override max iterations (default: 31)\n");
     printf("  --convergence <F>         Override convergence SEM/mean target\n");
     printf("  --max-runtime <sec>       Override max runtime per benchmark\n");
-    printf("  --cpu-pin <spec>          CPU pinning: auto, 0-7, or 0,2,4,6\n");
-    printf("  --numa-bind <spec>        Per-CPU NUMA binding: 18:0,19:0 or 0-15:0,16-31:1\n");
+    printf("  --cpu-pin <spec>          CPU pinning: auto|auto-all|auto-numa|<list>\n");
+    printf("  --numa-topo <spec>        NUMA topology: 18:0,19:0 or 0-15:0,16-31:1\n");
+    printf("  --membind <policy>        Memory policy: local|interleave|<node_id>\n");
     printf("  --cooldown <sec>          Override cooldown between benchmarks\n");
     printf("  --version                 Print version and exit\n");
     printf("  --help                    Show this help\n");
@@ -102,8 +103,11 @@ static int parse_config(const char *path, run_config_t *cfg, char ***bench_filte
             cfg->require_validate = (atoi(value) != 0);
         } else if (strcmp(key, "cpu_pin") == 0) {
             cfg->cpu_pin_spec = strdup(value);
-        } else if (strcmp(key, "numa_bind") == 0) {
-            cfg->numa_bind_spec = strdup(value);
+        } else if (strcmp(key, "numa_bind") == 0 ||         /* deprecated alias */
+                   strcmp(key, "numa_topo") == 0) {
+            cfg->numa_topo_spec = strdup(value);
+        } else if (strcmp(key, "membind") == 0) {
+            cfg->membind_spec = strdup(value);
         } else if (strcmp(key, "march_native") == 0 ||
                    strcmp(key, "isa_baseline") == 0) {
             fprintf(stderr, "Warning: %s:%d: key '%s' is build-time only, set via cmake -DSSB_USE_MARCH_NATIVE=ON\n",
@@ -178,7 +182,9 @@ int main(int argc, char *argv[]) {
         {"convergence", required_argument, 0, 'g'},
         {"max-runtime", required_argument, 0, 'R'},
         {"cpu-pin", required_argument, 0, 'P'},
-        {"numa-bind", required_argument, 0, 'N'},
+        {"numa-topo", required_argument, 0, 'N'},
+        {"numa-bind", required_argument, 0, 'N'},   /* deprecated alias */
+        {"membind", required_argument, 0, 'M'},
         {"cooldown", required_argument, 0, 'd'},
         {"version", no_argument, 0, 'V'},
         {"help", no_argument, 0, 'h'},
@@ -202,7 +208,7 @@ int main(int argc, char *argv[]) {
     parse_config(config_path, &config, &bench_filter, &bench_filter_count);
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "C:m:vt:c:b:T:xo:r:nLZi:I:g:R:P:N:d:Vh", long_opts, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "C:m:vt:c:b:T:xo:r:nLZi:I:g:R:P:N:M:d:Vh", long_opts, NULL)) != -1) {
         switch (opt) {
         case 'C': config_path = optarg; break;
         case 'm':
@@ -269,7 +275,8 @@ int main(int argc, char *argv[]) {
         case 'g': config.convergence_target = atof(optarg); break;
         case 'R': config.max_runtime_sec = atoi(optarg); break;
         case 'P': config.cpu_pin_spec = optarg; break;
-        case 'N': config.numa_bind_spec = optarg; break;
+        case 'N': config.numa_topo_spec = optarg; break;
+        case 'M': config.membind_spec = optarg; break;
         case 'd': config.cooldown_sec = atoi(optarg); break;
         case 'V': printf("ServMark %s\n", SSB_VERSION); free(bench_filter); return 0;
         case 'h': print_usage(argv[0]); free(bench_filter); return 0;

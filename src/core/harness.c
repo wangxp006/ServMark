@@ -16,6 +16,9 @@
 #include <signal.h>
 #include <stdbool.h>
 #include <sys/syscall.h>
+#ifdef __linux__
+#include <numaif.h>   /* mbind() for NUMA memory policy */
+#endif
 
 /* Child-parent pipe protocol: child writes result struct after benchmark run */
 typedef struct {
@@ -109,7 +112,8 @@ int harness_run_single(const benchmark_t *bench, run_mode_t mode,
 }
 
 
-/* Read thread siblings to find physical core mapping.
+/* Forward declaration */
+static int *harness_get_physical_cores(int *num_physical);
 
 /* Parse a CPU pin spec string into an array of CPU IDs.
  * Formats: "auto" -> list=NULL, count=0 (auto-detect)
@@ -117,10 +121,29 @@ int harness_run_single(const benchmark_t *bench, run_mode_t mode,
  *          "0-3,8-11" -> [0,1,2,3,8,9,10,11]
  * Returns malloc'd array, caller must free. */
 static int *harness_parse_cpu_spec(const char *spec, int *count_out) {
-    if (!spec || strcmp(spec, "auto") == 0) {
-        *count_out = 0; return NULL;
-    }
+    if (!spec || !spec[0]) { *count_out = 0; return NULL; }
     int ncpu = (int)sysconf(_SC_NPROCESSORS_ONLN);
+
+    /* Auto modes: return NULL with count = mode flag (negative) */
+    if (strcmp(spec, "auto") == 0) {
+        *count_out = 0; return NULL;           /* SMT-aware physical cores */
+    }
+    if (strcmp(spec, "auto-all") == 0) {
+        *count_out = -1;                       /* all logical CPUs */
+        int *list = calloc(ncpu, sizeof(int));
+        if (list) { for (int i = 0; i < ncpu; i++) list[i] = i; }
+        *count_out = ncpu;
+        return list;
+    }
+    if (strcmp(spec, "auto-numa") == 0) {
+        *count_out = -2;                       /* one CPU per NUMA node */
+        /* Fall through: handled in harness_run_parallel via system_info */
+        int *list = harness_get_physical_cores(&ncpu);
+        *count_out = (list && ncpu > 0) ? ncpu : 0;
+        return list;
+    }
+
+    /* Explicit CPU list parsing */
     int *list = calloc(512, sizeof(int));
     if (!list) { *count_out = 0; return NULL; }
     int count = 0;
@@ -247,21 +270,61 @@ static int harness_run_parallel(const benchmark_t *bench, run_mode_t mode,
         return -1;
     }
 
-    /* One-time init: auto-detect physical cores + parse manual CPU pinning.
+    /* One-time init: auto-detect physical cores + parse manual CPU/NUMA config.
      * Static so children inherit via fork()'s copy of the data segment. */
     static int *s_phys_map = NULL;
     static int s_num_phys = 0;
     static int *s_manual_pins = NULL;
     static int s_manual_pin_count = 0;
+    static int s_cpu_to_numa[512];          /* per-CPU NUMA node (-1=unset) */
+    static int s_membind_node = -1;         /* explicit mbind node, -1=local */
+    static bool s_membind_interleave = false;
 
     if (!s_phys_map && !s_manual_pins) {
         s_phys_map = harness_get_physical_cores(&s_num_phys);
+
+        /* Manual CPU pinning */
         if (config && config->cpu_pin_spec) {
             s_manual_pins = harness_parse_cpu_spec(config->cpu_pin_spec,
                                                     &s_manual_pin_count);
             if (s_manual_pin_count > 0)
-                fprintf(stderr, "[cpu-pin] manual: %d CPUs specified\n",
-                        s_manual_pin_count);
+                fprintf(stderr, "[cpu-pin] manual: %d CPUs\n", s_manual_pin_count);
+        }
+
+        /* NUMA topology override */
+        int ncpu = (int)sysconf(_SC_NPROCESSORS_ONLN);
+        for (int i = 0; i < ncpu && i < 512; i++) s_cpu_to_numa[i] = -1;
+        if (config && config->numa_topo_spec && config->numa_topo_spec[0]) {
+            int nbound = harness_parse_numa_bind(config->numa_topo_spec,
+                                                  s_cpu_to_numa, ncpu);
+            if (nbound > 0)
+                fprintf(stderr, "[numa-topo] override: %d CPUs mapped\n", nbound);
+        }
+
+        /* Memory binding policy */
+        s_membind_node = -1;
+        s_membind_interleave = false;
+        if (config && config->membind_spec && config->membind_spec[0]) {
+            if (strcmp(config->membind_spec, "local") == 0) {
+                s_membind_node = -1; /* mbind to CPU's local node */
+            } else if (strcmp(config->membind_spec, "interleave") == 0) {
+                s_membind_interleave = true;
+            } else {
+                s_membind_node = atoi(config->membind_spec);
+                fprintf(stderr, "[membind] policy: node %d\n", s_membind_node);
+            }
+        }
+
+        /* Validation: warn if pinned CPUs have no NUMA assignment */
+        if (s_manual_pins && s_manual_pin_count > 0 && s_cpu_to_numa[0] != -1) {
+            int missing = 0;
+            for (int i = 0; i < s_manual_pin_count; i++) {
+                int cpu = s_manual_pins[i];
+                if (cpu < ncpu && s_cpu_to_numa[cpu] < 0) missing++;
+            }
+            if (missing > 0)
+                fprintf(stderr, "[warn] %d pinned CPUs have no NUMA node assigned"
+                        " (use --numa-topo)\n", missing);
         }
     }
 
@@ -297,6 +360,44 @@ static int harness_run_parallel(const benchmark_t *bench, run_mode_t mode,
             }
             CPU_SET(pin_cpu, &cpuset);
             sched_setaffinity(0, sizeof(cpu_set_t), &cpuset);
+
+            /* NUMA memory policy: apply mbind based on membind_spec or numa_topo */
+            {
+                int nid = -1;
+                int node_count = 0;
+                unsigned long nodemask = 0;
+                int mode = MPOL_DEFAULT;
+
+                if (s_membind_interleave) {
+                    mode = MPOL_INTERLEAVE;
+                    /* Use all nodes from numa_topo or detected */
+                    int nc = (int)sysconf(_SC_NPROCESSORS_ONLN);
+                    for (int i = 0; i < nc; i++) {
+                        int nn = (s_cpu_to_numa[i] >= 0) ? s_cpu_to_numa[i] : -1;
+                        if (nn >= 0) nodemask |= (1UL << nn);
+                    }
+                    if (nodemask == 0) nodemask = ~0UL; /* all nodes */
+                } else if (s_membind_node >= 0) {
+                    nid = s_membind_node;
+                    mode = MPOL_BIND;
+                    nodemask = 1UL << nid;
+                } else if (s_cpu_to_numa[pin_cpu] >= 0) {
+                    /* --numa-topo set: bind memory to this CPU's NUMA node */
+                    nid = s_cpu_to_numa[pin_cpu];
+                    mode = MPOL_BIND;
+                    nodemask = 1UL << nid;
+                }
+
+                if (mode != MPOL_DEFAULT) {
+                    long pagesize = sysconf(_SC_PAGESIZE);
+                    /* mbind on the entire address space (best-effort via MPOL_MF_MOVE) */
+                    unsigned long addr = 0;
+                    unsigned long len = (1UL << 47); /* try to cover full VA */
+                    mbind((void*)addr, len, mode, &nodemask, sizeof(nodemask)*8,
+                          MPOL_MF_STRICT | MPOL_MF_MOVE);
+                    (void)pagesize; /* silence unused warning */
+                }
+            }
 
             child_result_t result = { .ret = -1, .iter = 0 };
             result.ret = run_benchmark_instance(bench, result.values, &result.iter);
@@ -390,14 +491,14 @@ int harness_run(const run_config_t *config, run_result_t **result_out) {
 
     system_probe(&result->sysinfo);
 
-    /* Override NUMA CPU topology from user-specified numa_bind spec */
-    if (config->numa_bind_spec && config->numa_bind_spec[0] &&
+    /* Override NUMA CPU topology from user-specified numa-topo spec */
+    if (config->numa_topo_spec && config->numa_topo_spec[0] &&
         result->sysinfo && result->sysinfo->numa_nodes) {
         int ncpu = (int)sysconf(_SC_NPROCESSORS_ONLN);
         int *c2n = calloc(ncpu, sizeof(int));
         if (c2n) {
             for (int i = 0; i < ncpu; i++) c2n[i] = -1;
-            int bound = harness_parse_numa_bind(config->numa_bind_spec, c2n, ncpu);
+            int bound = harness_parse_numa_bind(config->numa_topo_spec, c2n, ncpu);
             if (bound > 0) {
                 /* Count distinct NUMA nodes + CPUs per node */
                 int max_nid = -1;

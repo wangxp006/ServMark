@@ -24,8 +24,9 @@ typedef struct {
     bool reportable;         /* skip benchmarks with CV >= 10% */
     bool require_validate;   /* auto-run --validate before benchmark run */
     /* Manual CPU / NUMA binding */
-    char *cpu_pin_spec;      /* "auto" | "0,2,4,6" | "0-7" — CPU instance pinning */
-    char *numa_bind_spec;    /* "18:0,19:0,20:1" or "0-15:0,16-31:1" — per-CPU NUMA binding */
+    char *cpu_pin_spec;      /* "auto"|"auto-all"|"auto-numa"|"0,2,4,6"|"0-7" */
+    char *numa_topo_spec;    /* "18:0,19:0,20:1" or "0-15:0,16-31:1" — per-CPU NUMA topo */
+    char *membind_spec;      /* "local" | "interleave" | "0" (node id) — memory policy */
 } run_config_t;
 
 typedef struct {
