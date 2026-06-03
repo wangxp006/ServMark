@@ -88,7 +88,14 @@ static int fp_fft_measure(void *state, measurement_t *result) {
     fft_radix2(s->work_real, s->work_imag, FFT_N, s->twiddle_cos, s->twiddle_sin, s->bit_rev);
     clock_gettime(CLOCK_MONOTONIC, &t1);
 
-    for (int i = 0; i < FFT_N; i++) sink += s->work_real[i] + s->work_imag[i];
+    /* Inverse FFT verification: negate imag twiddle for inverse, apply 1/N scaling */
+    for (int i = 0; i < FFT_N; i++) s->twiddle_sin[i] = -s->twiddle_sin[i];
+    fft_radix2(s->work_real, s->work_imag, FFT_N, s->twiddle_cos, s->twiddle_sin, s->bit_rev);
+    for (int i = 0; i < FFT_N; i++) {
+        s->work_real[i] /= FFT_N; s->work_imag[i] /= FFT_N;
+        sink += fabs(s->work_real[i] - s->real[i]);
+    }
+    for (int i = 0; i < FFT_N; i++) s->twiddle_sin[i] = -s->twiddle_sin[i];
     __asm__ __volatile__("" : "+r"(sink));
 
     double el = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec)/1e9;

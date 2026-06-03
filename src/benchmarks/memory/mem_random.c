@@ -71,7 +71,7 @@ static int mem_random_cleanup(void *state) {
 benchmark_t bench_mem_random = {
     .name = "mem-random",
     .category = "C4",
-    .description = "Random access latency 32MB working set",
+    .description = "Random access latency 32MB (L3 on modern servers, not DRAM)",
     .tier = 1,
     .primary_metric_name = "ns/access",
     .higher_is_better = false,
