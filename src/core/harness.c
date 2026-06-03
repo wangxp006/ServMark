@@ -155,7 +155,12 @@ static int *harness_parse_cpu_spec(const char *spec, int *count_out) {
                 if (sscanf(cline, "%d-%*d", &first_cpu) == 1 ||
                     sscanf(cline, "%d", &first_cpu) == 1) {
                     list[n++] = first_cpu;
+                } else {
+                    fprintf(stderr, "[warn] auto-numa: node %d cpulist unreadable"
+                            " ('%s'), skipping\n", ni, cline);
                 }
+            } else {
+                fprintf(stderr, "[warn] auto-numa: node %d has empty cpulist\n", ni);
             }
             fclose(f);
         }
@@ -202,10 +207,10 @@ static int harness_parse_numa_bind(const char *spec, int *cpu_to_numa, int max_c
     char *endp = NULL;
     long nnodes = strtol(spec, &endp, 10);
     if (endp && *endp == '\0' && nnodes > 0 && nnodes <= 16) {
-        int cpus_per = (ncpu + (int)nnodes - 1) / (int)nnodes;
+        /* Interleaved split mirrors real NUMA topology
+         * (real HW: node0=0,2,4... node1=1,3,5... not contiguous) */
         for (int i = 0; i < ncpu && i < max_cpu; i++) {
-            cpu_to_numa[i] = i / cpus_per;
-            if (cpu_to_numa[i] >= (int)nnodes) cpu_to_numa[i] = (int)nnodes - 1;
+            cpu_to_numa[i] = i % (int)nnodes;
             bound++;
         }
         return bound;
@@ -357,7 +362,7 @@ static int harness_run_parallel(const benchmark_t *bench, run_mode_t mode,
     static int s_num_phys = 0;
     static int *s_manual_pins = NULL;
     static int s_manual_pin_count = 0;
-    static int s_cpu_to_numa[512];          /* per-CPU NUMA node (-1=unset) */
+    static int *s_cpu_to_numa = NULL;        /* per-CPU NUMA node, dyn alloc */
     static bool s_numa_topo_set = false;     /* true if numa_topo was parsed */
     static int s_membind_node = -1;         /* explicit mbind node, -1=local */
     static bool s_membind_interleave = false;
@@ -379,7 +384,10 @@ static int harness_run_parallel(const benchmark_t *bench, run_mode_t mode,
         /* NUMA topology override */
         int ncpu = (int)sysconf(_SC_NPROCESSORS_ONLN);
         s_numa_topo_set = false;
-        for (int i = 0; i < ncpu && i < 512; i++) s_cpu_to_numa[i] = -1;
+        free(s_cpu_to_numa);
+        s_cpu_to_numa = calloc(ncpu, sizeof(int));
+        if (s_cpu_to_numa)
+            for (int i = 0; i < ncpu; i++) s_cpu_to_numa[i] = -1;
         if (config && config->numa_topo_spec && config->numa_topo_spec[0]) {
             int nbound = harness_parse_numa_bind(config->numa_topo_spec,
                                                   s_cpu_to_numa, ncpu);
@@ -478,7 +486,8 @@ static int harness_run_parallel(const benchmark_t *bench, run_mode_t mode,
                 }
 
                 if (mode != MPOL_DEFAULT && maxnode > 0) {
-                    if (set_mempolicy(mode, &nodemask, (unsigned long)maxnode + 1) != 0) {
+                    /* maxnode = max(nid)+1, which is exactly what set_mempolicy expects */
+                    if (set_mempolicy(mode, &nodemask, (unsigned long)maxnode) != 0) {
                         fprintf(stderr, "[warn] set_mempolicy failed (may need root)\n");
                     }
                 }
@@ -585,17 +594,15 @@ int harness_run(const run_config_t *config, run_result_t **result_out) {
             for (int i = 0; i < ncpu; i++) c2n[i] = -1;
             int bound = harness_parse_numa_bind(config->numa_topo_spec, c2n, ncpu);
             if (bound > 0) {
+                /* Save old node info BEFORE freeing (avoids use-after-free) */
+                numa_node_t *old_nodes = result->sysinfo->numa_nodes;
+                int old_count = result->sysinfo->numa_node_count;
+
                 /* Count distinct NUMA nodes + CPUs per node */
                 int max_nid = -1;
                 for (int i = 0; i < ncpu; i++)
                     if (c2n[i] > max_nid) max_nid = c2n[i];
                 int n_nodes = max_nid + 1;
-                /* Free old numa_nodes, rebuild from user spec */
-                free(result->sysinfo->numa_nodes);
-                result->sysinfo->numa_node_count = n_nodes;
-                /* Save detected node info for memory/distance retention */
-                numa_node_t *old_nodes = result->sysinfo->numa_nodes;
-                int old_count = result->sysinfo->numa_node_count;
 
                 result->sysinfo->numa_nodes = calloc(n_nodes, sizeof(numa_node_t));
                 if (result->sysinfo->numa_nodes) {
@@ -629,7 +636,11 @@ int harness_run(const run_config_t *config, run_result_t **result_out) {
                         }
                     }
                 }
+                /* Free old nodes (with their cpu_list allocations) */
+                for (int on = 0; on < old_count; on++)
+                    free(old_nodes[on].cpu_list);
                 free(old_nodes);
+                result->sysinfo->numa_node_count = n_nodes;
                 fprintf(stderr, "[numa-bind] topology override: %d CPUs → %d nodes\n",
                         bound, n_nodes);
             }
