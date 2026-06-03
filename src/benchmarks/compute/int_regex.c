@@ -99,9 +99,9 @@ static int int_regex_cleanup(void *state) {
 }
 
 benchmark_t bench_int_regex = {
-    .name = "int-regex",
+    .name = "int-substr",
     .category = "C1",
-    .description = "Naive regex match on log text (Dhrystone branch path modernized)",
+    .description = "Naive substring search on 2MB log text (branch stress test)",
     .tier = 1,
     .primary_metric_name = "byte-scans/sec",
     .higher_is_better = true,

@@ -3,6 +3,7 @@
 #include <string.h>
 #include <time.h>
 #include <stdio.h>
+#include <inttypes.h>
 #include <ctype.h>
 
 #define PARSE_ITEMS 500000
@@ -26,7 +27,7 @@ static int int_parse_init(void **state) {
     char *p = s->buffer;
     for (int i = 0; i < PARSE_ITEMS; i++) {
         int64_t val = ((int64_t)rand() << 32) | rand();
-        p += snprintf(p, 32, "%ld,", val);
+        p += snprintf(p, 32, "%" PRId64 ",", val);
     }
     *state = s;
     return 0;

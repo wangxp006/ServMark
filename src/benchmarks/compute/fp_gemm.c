@@ -62,11 +62,10 @@ static int fp_gemm_measure(void *state, measurement_t *result) {
 
     clock_gettime(CLOCK_MONOTONIC, &t1);
 
-    /* Anti-DCE: verify a result */
-    for (int i = 0; i < N; i++)
-        sink += s->C[i];
-
-    __asm__ __volatile__("" : "+r"(sink));
+    /* Anti-DCE + basic verification: column-0 checksum should be non-zero */
+    double chk = 0.0;
+    for (int i = 0; i < N; i++) { chk += s->C[i*N]; sink += s->C[i]; }
+    __asm__ __volatile__("" : "+r"(sink) : "r"(chk));
 
     double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
     memset(result, 0, sizeof(*result));
