@@ -55,9 +55,9 @@ static int fp_ray_init(void **state) {
         return -1;
     }
     for (int i = 0; i < NUM_RAYS; i++) {
-        s->rays[i].orig = (vec3){0, 0, -5};
-        s->rays[i].dir = (vec3){(float)rand()/RAND_MAX - 0.5f,
-                                 (float)rand()/RAND_MAX - 0.5f, 1.0f};
+        float ox=((float)rand()/RAND_MAX-0.5f)*0.5f, oy=((float)rand()/RAND_MAX-0.5f)*0.5f;
+        s->rays[i].orig=(vec3){ox,oy,-5.0f};
+        s->rays[i].dir=(vec3){(float)rand()/RAND_MAX-0.5f,(float)rand()/RAND_MAX-0.5f,1.0f};
     }
     for (int i = 0; i < NUM_TRIS; i++) {
         float cx = ((float)rand()/RAND_MAX - 0.5f) * 2.0f;

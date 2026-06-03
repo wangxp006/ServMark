@@ -2,12 +2,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <pthread.h>
 
 /* 64-bit integer hash table benchmark - maps to Dhrystone integer ALU path */
 
-#define TABLE_SIZE (1 << 20)
+#define TABLE_SIZE (1 << 24)
 #define OPS_PER_ITER 10000000
+#define MAX_PROBES (TABLE_SIZE * 2)
 
 typedef struct {
     uint64_t *keys;
@@ -15,7 +15,6 @@ typedef struct {
     uint64_t *table_keys;
     uint64_t *table_vals;
     int64_t ops_done;
-    pthread_mutex_t mutex;
 } int_hash_state_t;
 
 static int int_hash_init(void **state) {
@@ -40,10 +39,7 @@ static int int_hash_init(void **state) {
         s->values[i] = s->keys[i] ^ 0xDEADBEEFCAFE1234ULL;
     }
 
-    pthread_mutex_init(&s->mutex, NULL);
-    *state = s;
-    (void)s; /* used */
-    return 0;
+    /* Generate random keys */
 }
 
 static uint64_t hash_func(uint64_t key) {
@@ -59,11 +55,15 @@ static uint64_t hash_func(uint64_t key) {
 
 static void hash_insert(int_hash_state_t *s, uint64_t key, uint64_t val) {
     uint64_t h = hash_func(key) & (TABLE_SIZE - 1);
-    while (s->table_keys[h] != 0 && s->table_keys[h] != key) {
+    int probes = 0;
+    while (s->table_keys[h] != 0 && s->table_keys[h] != key && probes < MAX_PROBES) {
         h = (h + 1) & (TABLE_SIZE - 1);
+        probes++;
     }
-    s->table_keys[h] = key;
-    s->table_vals[h] = val;
+    if (probes < MAX_PROBES) {
+        s->table_keys[h] = key;
+        s->table_vals[h] = val;
+    }
 }
 
 static uint64_t hash_lookup(int_hash_state_t *s, uint64_t key) {
@@ -144,7 +144,6 @@ static int int_hash_measure(void *state, measurement_t *result) {
 
 static int int_hash_cleanup(void *state) {
     int_hash_state_t *s = (int_hash_state_t *)state;
-    pthread_mutex_destroy(&s->mutex);
     free(s->keys); free(s->values);
     free(s->table_keys); free(s->table_vals);
     free(s);
