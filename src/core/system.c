@@ -3,9 +3,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
-#ifdef SSB_USE_HWLOC
-#include <hwloc.h>
-#endif
 
 int system_read_proc_int(const char *path, int64_t *value) {
     FILE *f = fopen(path, "r");
@@ -271,47 +268,10 @@ int system_probe(system_info_t **info_out) {
     }
 
     /* === Cache topology ===
-     * Priority: 1) hwloc  2) sysfs  3) hardcoded fallback */
+     * Priority: 1) sysfs  2) hardcoded fallback */
     info->cache_level_count = 0;
     info->caches = NULL;
-#ifdef SSB_USE_HWLOC
-    {
-        hwloc_topology_t topo;
-        if (hwloc_topology_init(&topo) == 0 &&
-            hwloc_topology_load(topo) == 0) {
-            int depth = hwloc_topology_get_depth(topo);
-            /* Count caches first */
-            int cache_count = 0;
-            for (int d = 0; d < depth; d++) {
-                if (hwloc_get_depth_type(topo, d) == HWLOC_OBJ_CACHE)
-                    cache_count += hwloc_get_nbobjs_by_depth(topo, d);
-            }
-            if (cache_count > 0) {
-                info->caches = calloc(cache_count, sizeof(cache_info_t));
-                if (info->caches) {
-                    for (int d = 0; d < depth; d++) {
-                        if (hwloc_get_depth_type(topo, d) != HWLOC_OBJ_CACHE) continue;
-                        int n = hwloc_get_nbobjs_by_depth(topo, d);
-                        for (int j = 0; j < n && info->cache_level_count < cache_count; j++) {
-                            hwloc_obj_t obj = hwloc_get_obj_by_depth(topo, d, j);
-                            if (obj) {
-                                cache_info_t *ci = &info->caches[info->cache_level_count++];
-                                ci->level = obj->attr->cache.depth;
-                                ci->type = (obj->attr->cache.type == HWLOC_OBJ_CACHE_DATA) ? "data" :
-                                           (obj->attr->cache.type == HWLOC_OBJ_CACHE_INSTRUCTION) ? "instruction" : "unified";
-                                ci->size_kb = (int)(obj->attr->cache.size / 1024);
-                                ci->line_size = (int)obj->attr->cache.linesize;
-                                ci->associativity = obj->attr->cache.associativity;
-                            }
-                        }
-                    }
-                }
-            }
-            hwloc_topology_destroy(topo);
-        }
-    }
-#endif
-    /* Sysfs fallback: read /sys/devices/system/cpu/cpu0/cache/index* */
+    /* Read /sys/devices/system/cpu/cpu0/cache/index* */
     if (info->cache_level_count == 0) {
         int idx = 0;
         for (idx = 0; idx < 8; idx++) {

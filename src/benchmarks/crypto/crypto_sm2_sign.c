@@ -26,7 +26,7 @@ static int crypto_sm2_sign_init(void **state) {
     if (!pctx) { free(s); return -1; }
     int ret = EVP_PKEY_keygen_init(pctx);
     if (ret <= 0) { EVP_PKEY_CTX_free(pctx); free(s); return -1; }
-    ret = EVP_PKEY_CTX_set_ec_keygen_curve_nid(pctx, NID_sm2);
+    ret = EVP_PKEY_CTX_set_ec_paramgen_curve_nid(pctx, NID_sm2);
     if (ret <= 0) { EVP_PKEY_CTX_free(pctx); free(s); return -1; }
     ret = EVP_PKEY_keygen(pctx, &s->pkey);
     EVP_PKEY_CTX_free(pctx);

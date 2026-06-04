@@ -39,7 +39,7 @@ static int crypto_sm4_warmup(void *state) {
     EVP_CIPHER_CTX *ctx=EVP_CIPHER_CTX_new();
     if(!ctx) return -1;
     int len,ret=0;
-    ret=EVP_EncryptInit_ex(ctx,EVP_sm4_ctr(),NULL,s->key,s->iv);
+    ret=EVP_EncryptInit_ex(ctx,EVP_get_cipherbyname("SM4-CTR"),NULL,s->key,s->iv);
     if(ret==1) EVP_EncryptUpdate(ctx,s->ciphertext,&len,s->plaintext,CHUNK_SIZE/4);
     EVP_CIPHER_CTX_free(ctx);
     return (ret==1)?0:-1;
@@ -54,7 +54,7 @@ static int crypto_sm4_measure(void *state, measurement_t *result) {
     clock_gettime(CLOCK_MONOTONIC,&t0);
     for(int n=0;n<NUM_CHUNKS;n++){
         int len;
-        ret=EVP_EncryptInit_ex(ctx,EVP_sm4_ctr(),NULL,s->key,s->iv);
+        ret=EVP_EncryptInit_ex(ctx,EVP_get_cipherbyname("SM4-CTR"),NULL,s->key,s->iv);
         if(ret!=1) goto err;
         ret=EVP_EncryptUpdate(ctx,s->ciphertext,&len,s->plaintext,CHUNK_SIZE);
         if(ret!=1) goto err;

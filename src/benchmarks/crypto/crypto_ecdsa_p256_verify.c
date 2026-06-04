@@ -24,7 +24,7 @@ static int crypto_ecdsa_p256_verify_init(void **state) {
     if (!pctx) { free(s); return -1; }
     int ret = EVP_PKEY_keygen_init(pctx);
     if (ret <= 0) { EVP_PKEY_CTX_free(pctx); free(s); return -1; }
-    ret = EVP_PKEY_CTX_set_ec_keygen_curve_nid(pctx, NID_X9_62_prime256v1);
+    ret = EVP_PKEY_CTX_set_ec_paramgen_curve_nid(pctx, NID_X9_62_prime256v1);
     if (ret <= 0) { EVP_PKEY_CTX_free(pctx); free(s); return -1; }
     ret = EVP_PKEY_keygen(pctx, &s->pkey);
     EVP_PKEY_CTX_free(pctx);

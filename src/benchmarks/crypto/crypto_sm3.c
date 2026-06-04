@@ -55,7 +55,7 @@ static int crypto_sm3_measure(void *state, measurement_t *result) {
     clock_gettime(CLOCK_MONOTONIC, &t1);
     EVP_MD_CTX_free(ctx);
     sink = s->digest[0] + s->digest[31];
-    __asm__ __volatile__("":"+r"(sink)::"r"(dlen));
+    __asm__ __volatile__("":"+r"(sink):"r"(dlen));
     double el=(t1.tv_sec-t0.tv_sec)+(t1.tv_nsec-t0.tv_nsec)/1e9;
     memset(result,0,sizeof(*result));
     result->primary_metric=(double)DATA_SIZE/el;

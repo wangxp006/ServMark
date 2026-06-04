@@ -67,7 +67,7 @@ static int crypto_hash_l2_measure(void *state, measurement_t *result) {
     }
 
     clock_gettime(CLOCK_MONOTONIC, &t1);
-    __asm__ __volatile__("":"+r"(sink)::"r"(dlen));
+    __asm__ __volatile__("":"+r"(sink):"r"(dlen));
 
     double el=(t1.tv_sec-t0.tv_sec)+(t1.tv_nsec-t0.tv_nsec)/1e9;
     memset(result,0,sizeof(*result));

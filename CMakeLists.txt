@@ -23,8 +23,7 @@ if(SSB_USE_MARCH_NATIVE)
 endif()
 
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(HWLOC REQUIRED hwloc)
-add_definitions(-DSSB_USE_HWLOC)
+
 pkg_check_modules(NUMA REQUIRED numa)
 pkg_check_modules(LIBCRYPTO REQUIRED libcrypto)
 pkg_check_modules(ZSTD REQUIRED libzstd)
@@ -40,12 +39,11 @@ add_library(ssbcore STATIC
 )
 target_include_directories(ssbcore PUBLIC
     ${CMAKE_SOURCE_DIR}/inc
-    ${HWLOC_INCLUDE_DIRS} ${NUMA_INCLUDE_DIRS}
-    ${LIBCRYPTO_INCLUDE_DIRS} ${ZSTD_INCLUDE_DIRS}
+    ${NUMA_INCLUDE_DIRS} ${LIBCRYPTO_INCLUDE_DIRS} ${ZSTD_INCLUDE_DIRS}
 )
 target_link_libraries(ssbcore PUBLIC
-    ${HWLOC_LIBRARIES} ${NUMA_LIBRARIES} ${LIBCRYPTO_LIBRARIES}
-    ${ZSTD_LIBRARIES} ${PTHREAD_LIBRARIES} ${MATH_LIBRARIES} dl rt
+    ${NUMA_LIBRARIES} ${LIBCRYPTO_LIBRARIES} ${ZSTD_LIBRARIES}
+    ${PTHREAD_LIBRARIES} ${MATH_LIBRARIES} dl rt
 )
 
 # Benchmark libraries — one per directory, mapped to categories:
