@@ -138,7 +138,7 @@ static int int_hash_measure(void *state, measurement_t *result) {
 
     double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
     memset(result, 0, sizeof(*result));
-    result->primary_metric = (3.0 * OPS_PER_ITER) / elapsed;
+    result->primary_metric = (4.0 * OPS_PER_ITER) / elapsed; /* insert+lookup+delete+verify = 4 phases */
     result->wall_seconds = elapsed;
 
     __asm__ __volatile__("" : "+r"(sink));

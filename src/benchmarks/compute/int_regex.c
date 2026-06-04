@@ -87,7 +87,7 @@ static int int_regex_measure(void *state, measurement_t *result) {
 
     double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
     memset(result, 0, sizeof(*result));
-    result->primary_metric = (s->haystack ? LOG_SIZE * (double)PATTERN_COUNT / elapsed : 1.0);
+    result->primary_metric = LOG_SIZE * (double)PATTERN_COUNT / elapsed;
     result->wall_seconds = elapsed;
     return 0;
 }

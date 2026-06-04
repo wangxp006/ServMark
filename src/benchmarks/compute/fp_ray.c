@@ -97,7 +97,6 @@ static int fp_ray_measure(void *state, measurement_t *result) {
 
     clock_gettime(CLOCK_MONOTONIC, &t1);
 
-    s->hits[0] = sink;
     /* Verify intersection count is plausible (not all rays miss, not all hit) */
     if (sink == 0 || sink >= NUM_RAYS * NUM_TRIS) return -1;
     __asm__ __volatile__("" : "+r"(sink));
