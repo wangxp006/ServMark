@@ -27,6 +27,7 @@ typedef struct {
     char *cpu_pin_spec;      /* "auto"|"auto-all"|"auto-numa"|"0,2,4,6"|"0-7" */
     char *numa_topo_spec;    /* "18:0,19:0,20:1" or "0-15:0,16-31:1" — per-CPU NUMA topo */
     char *membind_spec;      /* "local" | "interleave" | "0" (node id) — memory policy */
+    bool generate_reference; /* save result means as reference baseline file */
 } run_config_t;
 
 typedef struct {

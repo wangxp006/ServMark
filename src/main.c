@@ -38,6 +38,7 @@ static void print_usage(const char *prog) {
     printf("  --numa-topo <spec>        NUMA topo: N|@file|cpu_range:nid,...\n");
     printf("  --membind <policy>        Memory policy: local|interleave|<node_id>\n");
     printf("  --cooldown <sec>          Override cooldown between benchmarks\n");
+    printf("  --generate-reference      Save result means as reference baseline\n");
     printf("  --version                 Print version and exit\n");
     printf("  --help                    Show this help\n");
 }
@@ -186,6 +187,7 @@ int main(int argc, char *argv[]) {
         {"numa-bind", required_argument, 0, 'N'},   /* deprecated alias */
         {"membind", required_argument, 0, 'M'},
         {"cooldown", required_argument, 0, 'd'},
+        {"generate-reference", no_argument, 0, 'G'},
         {"version", no_argument, 0, 'V'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
@@ -208,7 +210,7 @@ int main(int argc, char *argv[]) {
     parse_config(config_path, &config, &bench_filter, &bench_filter_count);
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "C:m:vt:c:b:T:xo:r:nLZi:I:g:R:P:N:M:d:Vh", long_opts, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "C:m:vt:c:b:T:xo:r:nLZi:I:g:R:P:N:M:d:GVh", long_opts, NULL)) != -1) {
         switch (opt) {
         case 'C': config_path = optarg; break;
         case 'm':
@@ -277,6 +279,7 @@ int main(int argc, char *argv[]) {
         case 'P': config.cpu_pin_spec = optarg; break;
         case 'N': config.numa_topo_spec = optarg; break;
         case 'M': config.membind_spec = optarg; break;
+        case 'G': config.generate_reference = true; break;
         case 'd': config.cooldown_sec = atoi(optarg); break;
         case 'V': printf("ServMark %s\n", SSB_VERSION); free(bench_filter); return 0;
         case 'h': print_usage(argv[0]); free(bench_filter); return 0;
@@ -390,6 +393,29 @@ int main(int argc, char *argv[]) {
     printf("  Report:     %s\n", path);
 
     output_terminal_summary(result);
+
+    /* Generate reference baseline file if requested */
+    if (config.generate_reference) {
+        char refpath[512];
+        snprintf(refpath, sizeof(refpath), "%s/%s.reference.txt",
+                 config.output_dir, result->run_id);
+        FILE *rf = fopen(refpath, "w");
+        if (rf) {
+            fprintf(rf, "# ServMark reference baseline — generated %s\n",
+                    ctime(&result->start_time));
+            fprintf(rf, "# Format: benchmark_name = baseline_value\n");
+            fprintf(rf, "# Use with: ./servmark --reference %s\n\n", refpath);
+            for (int i = 0; i < result->subtest_count; i++) {
+                if (result->subtests[i].stats.iterations > 0)
+                    fprintf(rf, "%s = %.6f\n", result->subtests[i].bench->name,
+                            result->subtests[i].stats.mean);
+            }
+            fclose(rf);
+            printf("  Reference:   %s\n", refpath);
+        } else {
+            fprintf(stderr, "Warning: cannot write reference to '%s'\n", refpath);
+        }
+    }
 
     harness_free_result(result);
     for (int j = 0; j < bench_filter_count; j++) free(bench_filter[j]);

@@ -17,7 +17,39 @@
 #include <stdbool.h>
 #include <sys/syscall.h>
 #ifdef __linux__
-#include <numaif.h>   /* mbind() for NUMA memory policy */
+#include <numaif.h>
+#include <linux/perf_event.h>
+#include <sys/ioctl.h>
+#include <asm/unistd.h>
+
+static long _perf_event_open(struct perf_event_attr *e, pid_t pid,
+                             int cpu, int gfd, unsigned long fl) {
+    return syscall(__NR_perf_event_open, e, pid, cpu, gfd, fl);
+}
+static int _perf_counters_start(int *fdi, int *fdc) {
+    struct perf_event_attr pe; memset(&pe,0,sizeof(pe));
+    pe.type=PERF_TYPE_HARDWARE; pe.size=sizeof(pe);
+    pe.disabled=1; pe.exclude_kernel=1; pe.exclude_hv=1;
+    pe.config=PERF_COUNT_HW_INSTRUCTIONS;
+    *fdi=(int)_perf_event_open(&pe,0,-1,-1,0);
+    pe.config=PERF_COUNT_HW_CPU_CYCLES;
+    *fdc=(int)_perf_event_open(&pe,0,-1,-1,0);
+    if(*fdi>=0&&*fdc>=0){
+        ioctl(*fdi,PERF_EVENT_IOC_RESET,0);
+        ioctl(*fdc,PERF_EVENT_IOC_RESET,0);
+        ioctl(*fdi,PERF_EVENT_IOC_ENABLE,0);
+        ioctl(*fdc,PERF_EVENT_IOC_ENABLE,0); return 0;
+    }
+    if(*fdi>=0){close(*fdi);*fdi=-1;} if(*fdc>=0){close(*fdc);*fdc=-1;}
+    return -1;
+}
+static void _perf_counters_stop(int fdi,int fdc,uint64_t *insns,uint64_t *cyc){
+    *insns=0;*cyc=0;
+    if(fdi>=0){ioctl(fdi,PERF_EVENT_IOC_DISABLE,0);
+        if(read(fdi,insns,sizeof(uint64_t))!=sizeof(uint64_t))*insns=0; close(fdi);}
+    if(fdc>=0){ioctl(fdc,PERF_EVENT_IOC_DISABLE,0);
+        if(read(fdc,cyc,sizeof(uint64_t))!=sizeof(uint64_t))*cyc=0; close(fdc);}
+}
 #endif
 
 /* Child-parent pipe protocol: child writes result struct after benchmark run */
@@ -61,7 +93,14 @@ static int run_benchmark_instance(const benchmark_t *bench, double *values_out, 
 
     while (iter < max_iter) {
         measurement_t m;
+#ifdef __linux__
+        int fdi=-1, fdc=-1;
+        _perf_counters_start(&fdi,&fdc);
+#endif
         ret = bench->measure(state, &m);
+#ifdef __linux__
+        _perf_counters_stop(fdi,fdc,&m.instructions,&m.cycles);
+#endif
         if (ret != 0) { bench->cleanup(state); return ret; }
         values_out[iter++] = m.primary_metric;
 
