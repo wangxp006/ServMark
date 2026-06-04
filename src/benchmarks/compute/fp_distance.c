@@ -73,7 +73,7 @@ static int fp_distance_measure(void *state, measurement_t *result) {
 
     double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
     memset(result, 0, sizeof(*result));
-    double total_flops = (double)NUM_VECTORS * (6.0 * VEC_DIM + 5.0); /* 3 FMA/iter + sqrt*2 + div */
+    double total_flops = (double)NUM_VECTORS * (4.0 * VEC_DIM + 3.0); /* per iter: 2 mul+2 add in loop + 1 mul+1 div+1 sqrt outside */
     result->primary_metric = total_flops / elapsed;
     result->wall_seconds = elapsed;
     return 0;

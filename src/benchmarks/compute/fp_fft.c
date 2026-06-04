@@ -5,7 +5,7 @@
 #include <math.h>
 
 #define FFT_N 2048
-#define FLOPS_PER_FFT (5.0 * FFT_N * log2(FFT_N))
+#define FLOPS_PER_FFT (5.0 * FFT_N * log2(FFT_N))  /* approx: N*logN complex butterfly ~10 ops, simplified */
 
 typedef struct {
     double *real, *imag;

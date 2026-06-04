@@ -14,7 +14,7 @@ typedef struct {
     uint64_t *values;
     uint64_t *table_keys;
     uint64_t *table_vals;
-    int64_t ops_done;
+    int64_t ops_done;        /* reserved for future use */
 } int_hash_state_t;
 
 static int int_hash_init(void **state) {
@@ -33,13 +33,12 @@ static int int_hash_init(void **state) {
         return -1;
     }
 
-    /* Generate random keys */
+    /* Generate random keys and values */
     for (int i = 0; i < OPS_PER_ITER; i++) {
         s->keys[i] = ((uint64_t)rand() << 32) | (uint64_t)rand();
         s->values[i] = s->keys[i] ^ 0xDEADBEEFCAFE1234ULL;
     }
-
-    /* Generate random keys */
+    *state = s; return 0;
 }
 
 static uint64_t hash_func(uint64_t key) {
