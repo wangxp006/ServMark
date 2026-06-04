@@ -300,8 +300,8 @@ Raw Measurements → stats_compute() → normalized → Category Scores → Pill
 
 | Pillar | Categories (weights) |
 |--------|---------------------|
-| Throughput | C1(12%), C2(10%), C3(5%), C4(8%), C10(10%), C13(5%) |
-| Latency | C6(8%), C7(10%), C8(6%), C11(5%), C12(5%) |
+| Throughput | C1(12%), C2(10%), C3(8%), C4(8%), C10(10%), C13(7%) |
+| Latency | C6(8%), C7(7%), C8(5%), C11(5%), C12(5%) |
 | Efficiency | C5(5%), C14(3%), C15(2%) |
 
 **Overall Score** = geometric mean of three pillars. Latency benchmarks inverted (higher=better). Self-normalized default; `--reference` enables cross-machine baselines.
